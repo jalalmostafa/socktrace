@@ -53,4 +53,5 @@ dkms.conf
 
 ## Project-specific
 src/bpf/vmlinux.h
+src/sockstats.skel.h
 *.ll
