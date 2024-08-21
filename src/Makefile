@@ -1,5 +1,5 @@
 
-CFLAGS += -g -O2
+CFLAGS += -g -O2 -std=gnu11
 
 BPF_HEADERS := $(wildcard bpf/*.h)
 BPF_CFLAGS += -I$(BPF_HEADERS)
@@ -20,11 +20,10 @@ endif
 
 all: vmlinux sockstats.skel.h sockstats
 
-LDFLAGS += 
-LDLIBS += -L$(LIBBPF_PATH) -l:libbpf.a
+LDFLAGS += -L$(LIBBPF_PATH) -l:libbpf.a -lelf -lz
 
 sockstats: %: %.c $(LIBBPF_ARCHIVE)
-	$(QUIET_CC)$(CC) -Wall $(CFLAGS) $(LDFLAGS) -o $@ $(LDLIBS) $<
+	$(QUIET_CC)$(CC) -Wall $(CFLAGS) $< $(LDFLAGS) -o $@ 
 
 sockstats.skel.h: bpf/sockstats.bpf.o
 	$(Q)$(QUIET_BPFTOOL)bpftool gen skeleton $< > $@

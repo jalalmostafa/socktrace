@@ -3,17 +3,23 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
-
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
+int target_pid = 0;
 
-SEC("tracepoint/syscalls/sys_enter_openat")
-int tracepoint__syscalls__sys_enter_openat(struct trace_event_raw_sys_enter *ctx)
+#define gettgid() (bpf_get_current_pid_tgid() >> 32)
+
+SEC("tracepoint/syscalls/sys_enter_socket")
+int tracepoint__syscalls__sys_enter_socket(struct trace_event_raw_sys_enter* ctx)
 {
+    int tgid = gettgid();
+    if (tgid == target_pid) {
+        bpf_printk("tgid=%d\n", tgid);
+    }
     // u64 pid = bpf_get_current_pid_tgid() >> 32;
     /* use kernel terminology here for tgid/pid: */
     // if (pid != target_pid) {
-        // return 0;
+    // return 0;
     // }
     /* store arg info for later lookup */
     // since we can manually specify the attach process in userspace,

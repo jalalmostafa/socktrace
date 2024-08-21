@@ -2,8 +2,7 @@
     "files.associations": {
         "*.props": "xml",
         "*.targets": "xml",
-        "bpf_helpers.h": "c",
-        "bpf_tracing.h": "c",
-        "vmlinux.h": "c"
+        "*.h": "c",
+        "*.c": "c"
     }
 }
