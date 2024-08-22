@@ -29,9 +29,11 @@ int tp_syscall_process(__u32 fd)
     __u32 tgid = pidtgid >> 32;
     __u32 pid = pidtgid & 0xFFFFFFFF;
 
-    if (tgid != target_pid) {
+    if (tgid != target_pid)
         return 0;
-    }
+
+    if (fd == 0 || fd == 1 || fd == 2)
+        return 0;
 
     void* map = bpf_map_lookup_elem(&sockets, &fd);
     if (map == NULL) {
@@ -56,6 +58,12 @@ int tracepoint__syscalls__sys_enter_socket(struct trace_event_raw_sys_enter* ctx
     return tp_syscall_process(FD(ctx));
 }
 
+SEC("tracepoint/syscalls/sys_enter_socketpair")
+int tracepoint__syscalls__sys_enter_socketpair(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
+}
+
 SEC("tracepoint/syscalls/sys_enter_bind")
 int tracepoint__syscalls__sys_enter_bind(struct trace_event_raw_sys_enter* ctx)
 {
@@ -64,6 +72,18 @@ int tracepoint__syscalls__sys_enter_bind(struct trace_event_raw_sys_enter* ctx)
 
 SEC("tracepoint/syscalls/sys_enter_listen")
 int tracepoint__syscalls__sys_enter_listen(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
+}
+
+SEC("tracepoint/syscalls/sys_enter_accept")
+int tracepoint__syscalls__sys_enter_accept(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
+}
+
+SEC("tracepoint/syscalls/sys_enter_accept4")
+int tracepoint__syscalls__sys_enter_accept4(struct trace_event_raw_sys_enter* ctx)
 {
     return tp_syscall_process(FD(ctx));
 }
@@ -100,6 +120,36 @@ int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter* ct
 
 SEC("tracepoint/syscalls/sys_enter_sendmmsg")
 int tracepoint__syscalls__sys_enter_sendmmsg(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
+}
+
+SEC("tracepoint/syscalls/sys_enter_getsockopt")
+int tracepoint__syscalls__sys_enter_getsockopt(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
+}
+
+SEC("tracepoint/syscalls/sys_enter_setsockopt")
+int tracepoint__syscalls__sys_enter_setsockopt(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
+}
+
+SEC("tracepoint/syscalls/sys_enter_getpeername")
+int tracepoint__syscalls__sys_enter_getpeername(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
+}
+
+SEC("tracepoint/syscalls/sys_enter_getsockname")
+int tracepoint__syscalls__sys_enter_getsockname(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
+}
+
+SEC("tracepoint/syscalls/sys_enter_connect")
+int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter* ctx)
 {
     return tp_syscall_process(FD(ctx));
 }

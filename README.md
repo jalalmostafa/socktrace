@@ -5,7 +5,7 @@ A tool to discover BSD sockets concurrency statistics using eBPF
 
 - [ ] Use TUI to print output
 - [ ] Add option to output to file
-- [ ] Add support for poll/epoll hooks
+- [ ] Add support for poll/select/epoll hooks
 
 ## Usage
 

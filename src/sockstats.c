@@ -35,7 +35,7 @@ void handler(int)
 int fetch_maps(struct sockstats_bpf* bpf)
 {
     int ret = 0;
-    fprintf(stderr, "\nSocket\t\t|\t\tPID\t\t|\t\tTracked Syscalls\n");
+    fprintf(stderr, "\nSocketFD\t\t|\t\tPID\t\t|\t\tTracked Syscalls\n");
     for (int i = 0; i < MAX_SOCKETS; i++) {
         __u32 mapid;
         if (bpf_map__lookup_elem(bpf->maps.sockets, &i, sizeof(__u32), &mapid, sizeof(__u32), 0) < 0) {
@@ -61,7 +61,7 @@ int fetch_maps(struct sockstats_bpf* bpf)
             current = &next;
             if (next != 0) {
                 bpf_map_lookup_elem(mapfd, current, &value);
-                fprintf(stderr, "%u\t\t|\t\t%u\t\t|\t\t%u\n", i, *current, value);
+                fprintf(stderr, "%u\t\t\t|\t\t%u\t\t|\t\t%u\n", i, *current, value);
             }
         } while (ret != 0);
         close(mapfd);
