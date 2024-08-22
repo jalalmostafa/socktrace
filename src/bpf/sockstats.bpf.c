@@ -153,3 +153,9 @@ int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter* ct
 {
     return tp_syscall_process(FD(ctx));
 }
+
+SEC("tracepoint/syscalls/sys_enter_shutdown")
+int tracepoint__syscalls__sys_enter_shutdown(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
+}
