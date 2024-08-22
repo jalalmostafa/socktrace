@@ -67,5 +67,5 @@ check_submodule:
 		echo "" ;\
 	fi\
 
-clean: libbpf_clean
+clean:
 	$(Q)$(MAKE) -C src clean

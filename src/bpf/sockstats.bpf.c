@@ -3,34 +3,103 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
+#include "sockstats.bpf.h"
+
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-int target_pid = 0;
+__u32 target_pid = 0;
 
-#define gettgid() (bpf_get_current_pid_tgid() >> 32)
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_PROCESSES);
+    __type(key, __u32);
+    __type(value, __u32);
+} processes SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __uint(max_entries, MAX_SOCKETS);
+    __type(key, __u32);
+    __type(value, __u32);
+} sockets SEC(".maps");
+
+int tp_syscall_process(__u32 fd)
+{
+    __u64 pidtgid = bpf_get_current_pid_tgid();
+    __u32 tgid = pidtgid >> 32;
+    __u32 pid = pidtgid & 0xFFFFFFFF;
+
+    if (tgid != target_pid) {
+        return 0;
+    }
+
+    void* map = bpf_map_lookup_elem(&sockets, &fd);
+    if (map == NULL) {
+        bpf_printk("Inner map is null\n");
+        return 0;
+    }
+
+    __u32 ncounter = 1;
+    __u32* counter = bpf_map_lookup_elem(map, &pid);
+    if (counter == NULL) {
+        if (bpf_map_update_elem(map, &pid, &ncounter, 0) < 0)
+            bpf_printk("\n");
+    } else
+        __sync_fetch_and_add(counter, 1);
+
+    return 0;
+}
 
 SEC("tracepoint/syscalls/sys_enter_socket")
 int tracepoint__syscalls__sys_enter_socket(struct trace_event_raw_sys_enter* ctx)
 {
-    int tgid = gettgid();
-    if (tgid == target_pid) {
-        bpf_printk("tgid=%d\n", tgid);
-    }
-    // u64 pid = bpf_get_current_pid_tgid() >> 32;
-    /* use kernel terminology here for tgid/pid: */
-    // if (pid != target_pid) {
-    // return 0;
-    // }
-    /* store arg info for later lookup */
-    // since we can manually specify the attach process in userspace,
-    // we don't need to check the process allowed here
+    return tp_syscall_process(FD(ctx));
+}
 
-    // struct args_t args = {};
-    // args.fname = (const char *)ctx->args[1];
-    // args.flags = (int)ctx->args[2];
-    // if (rewrite) {
-    //     bpf_probe_write_user((char*)ctx->args[1], "hijacked", 9);
-    // }
-    // bpf_map_update_elem(&start, &pid, &args, 0);
-    return 0;
+SEC("tracepoint/syscalls/sys_enter_bind")
+int tracepoint__syscalls__sys_enter_bind(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
+}
+
+SEC("tracepoint/syscalls/sys_enter_listen")
+int tracepoint__syscalls__sys_enter_listen(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
+}
+
+SEC("tracepoint/syscalls/sys_enter_recvfrom")
+int tracepoint__syscalls__sys_enter_recvfrom(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
+}
+
+SEC("tracepoint/syscalls/sys_enter_recvmsg")
+int tracepoint__syscalls__sys_enter_recvmsg(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
+}
+
+SEC("tracepoint/syscalls/sys_enter_recvmmsg")
+int tracepoint__syscalls__sys_enter_recvmmsg(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
+}
+
+SEC("tracepoint/syscalls/sys_enter_sendto")
+int tracepoint__syscalls__sys_enter_sendto(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
+}
+
+SEC("tracepoint/syscalls/sys_enter_sendmsg")
+int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
+}
+
+SEC("tracepoint/syscalls/sys_enter_sendmmsg")
+int tracepoint__syscalls__sys_enter_sendmmsg(struct trace_event_raw_sys_enter* ctx)
+{
+    return tp_syscall_process(FD(ctx));
 }

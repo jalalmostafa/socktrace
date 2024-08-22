@@ -1,8 +1,7 @@
 
-CFLAGS += -g -O2 -std=gnu11
+CFLAGS += -g -O2 -std=gnu11 -I$(LIBBPF_PATH)
 
-BPF_HEADERS := $(wildcard bpf/*.h)
-BPF_CFLAGS += -I$(BPF_HEADERS)
+BPF_CFLAGS += -Ibpf
 
 BPF_TARGET := bpf
 
@@ -18,15 +17,15 @@ ifeq ($(VERBOSE), 0)
 	QUIET_BPFTOOL  = echo '  BPFTOOL  '$@;
 endif
 
-all: vmlinux sockstats.skel.h sockstats
+all: sockstats
 
 LDFLAGS += -L$(LIBBPF_PATH) -l:libbpf.a -lelf -lz
 
-sockstats: %: %.c $(LIBBPF_ARCHIVE)
+sockstats: %: %.c $(LIBBPF_ARCHIVE) vmlinux sockstats.skel.h
 	$(QUIET_CC)$(CC) -Wall $(CFLAGS) $< $(LDFLAGS) -o $@ 
 
 sockstats.skel.h: bpf/sockstats.bpf.o
-	$(Q)$(QUIET_BPFTOOL)bpftool gen skeleton $< > $@
+	$(Q)$(QUIET_BPFTOOL)bpftool gen skeleton ${<:.c=.o} > $@
 
 bpf/sockstats.bpf.o: bpf/%.o: bpf/%.c
 	$(QUIET_CLANG)clang -S -target $(BPF_TARGET) \
