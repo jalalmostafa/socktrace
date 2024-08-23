@@ -1,7 +1,7 @@
 
 CFLAGS += -g -O2 -std=gnu11 -I$(LIBBPF_PATH)
 
-BPF_CFLAGS += -Ibpf
+BPF_CFLAGS += -Ibpf -I$(LIBBPF_PATH)
 
 BPF_TARGET := bpf
 

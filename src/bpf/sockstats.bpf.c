@@ -1,7 +1,7 @@
 #include "vmlinux.h"
 
-#include <bpf/bpf_helpers.h>
-#include <bpf/bpf_tracing.h>
+#include <bpf_helpers.h>
+#include <bpf_tracing.h>
 
 #include "sockstats.bpf.h"
 
@@ -32,10 +32,6 @@ int tp_syscall_process(__u32 fd)
     if (tgid != target_pid)
         return 0;
 
-    // FIXME: replace this with, is_fd_socket(fd)
-    if (fd == 0 || fd == 1 || fd == 2)
-        return 0;
-
     void* map = bpf_map_lookup_elem(&sockets, &fd);
     if (map == NULL) {
         bpf_printk("Inner map is null\n");
@@ -53,19 +49,15 @@ int tp_syscall_process(__u32 fd)
     return 0;
 }
 
-SEC("tracepoint/syscalls/sys_enter_socket")
-int tracepoint__syscalls__sys_enter_socket(struct trace_event_raw_sys_enter* ctx)
+SEC("tracepoint/syscalls/sys_exit_socket")
+int tracepoint__syscalls__sys_exit_socket(struct trace_event_raw_sys_exit* ctx)
 {
+    int fd = ctx->ret;
+    if (fd < 0)
+        return 0;
     // TODO: record sockets here to know which FDs are sockets, then we can support
     // syscalls like read, write, close, ...
-    return tp_syscall_process(FD(ctx));
-}
-
-SEC("tracepoint/syscalls/sys_enter_socketpair")
-int tracepoint__syscalls__sys_enter_socketpair(struct trace_event_raw_sys_enter* ctx)
-{
-    // TODO: record sockets here to know which FDs are sockets
-    return tp_syscall_process(FD(ctx));
+    return tp_syscall_process(ctx->ret);
 }
 
 SEC("tracepoint/syscalls/sys_enter_bind")
