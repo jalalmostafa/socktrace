@@ -68,4 +68,5 @@ check_submodule:
 	fi\
 
 clean:
+	$(Q)echo "libbpf submodule was not cleaned. Explicitly execute 'make libbpf_clean' to clean it."
 	$(Q)$(MAKE) -C src clean

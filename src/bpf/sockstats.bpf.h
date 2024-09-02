@@ -7,4 +7,6 @@
 #define FIRST_ARG(ctx) (ctx->args[0])
 #define FD(ctx) (FIRST_ARG(ctx))
 
+#define REGSOCK 1
+
 #endif

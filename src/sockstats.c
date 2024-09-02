@@ -12,6 +12,8 @@
 #include "sockstats.skel.h"
 #include "bpf/sockstats.bpf.h"
 
+#define CHLD_MAP_NAME_MAXLEN 20
+
 void help(char* program)
 {
     printf("Usage:\n"
@@ -30,6 +32,7 @@ void launch_error(char** args, int argc)
 
 void handler(int)
 {
+    // no need to handle anything, we ignore it
 }
 
 int fetch_maps(struct sockstats_bpf* bpf)
@@ -94,6 +97,7 @@ int main(int argc, char** argv)
 
     char pipe_data;
     int pipefd[2];
+    // pipe to synchronize parent and child
     if (pipe(pipefd) < 0) {
         ret = -1;
         goto exit;
@@ -103,11 +107,12 @@ int main(int argc, char** argv)
     if (pid > 0) {
         fprintf(stderr, "Launched process %d\n", pid);
         close(pipefd[0]);
+
         struct sigaction sa;
         sa.sa_handler = handler;
         sa.sa_flags = 0;
         sigemptyset(&sa.sa_mask);
-
+        // Stop waitpid below using a SIGALRM timer
         if (sigaction(SIGALRM, &sa, NULL) == -1) {
             perror("Error setting timer");
             ret = -1;
@@ -140,7 +145,6 @@ int main(int argc, char** argv)
         }
         is_ebpf_attached = true;
 
-#define CHLD_MAP_NAME_MAXLEN 20
         char child_map_name[CHLD_MAP_NAME_MAXLEN];
         for (int i = 0; i < MAX_SOCKETS; i++) {
             snprintf(child_map_name, CHLD_MAP_NAME_MAXLEN, "processes_%u", i);
@@ -152,12 +156,16 @@ int main(int argc, char** argv)
             }
         }
 
+        // Send signal to the child that we are ready
+        // (void)! is used to ignore the -Wunused-result compiler warning
         (void)!write(pipefd[1], &pipe_data, sizeof(pipe_data));
+
         while (1) {
             alarm(1);
 
             // Wait for the child process to finish
             if (waitpid(pid, &wstatus, 0) == -1) {
+                // If SIGALRM interrupt was received
                 if (errno == EINTR)
                     if (fetch_maps(bpf) < 0)
                         break;
@@ -168,6 +176,8 @@ int main(int argc, char** argv)
         alarm(0);
     } else if (pid == 0) {
         close(pipefd[1]);
+        // Wait the parent to be ready to intercept the child, wait for a signal
+        // (void)! is used to ignore the -Wunused-result compiler warning
         (void)!read(pipefd[0], &pipe_data, sizeof(pipe_data));
         int ret = execvp(program, argv);
         if (ret < 0) {

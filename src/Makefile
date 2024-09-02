@@ -36,7 +36,8 @@ bpf/sockstats.bpf.o: bpf/%.o: bpf/%.c
 	$(QUIET_STRIP)llvm-strip -g $@
 
 clean:
-	$(Q)rm -rf *.o sockstats bpf/*.o bpf/*.ll bpf/vmlinux.h
+	$(Q)echo "Cleaning sockstats..."
+	$(Q)rm -rf *.o sockstats.skel.h sockstats bpf/*.o bpf/*.ll bpf/vmlinux.h
 
 vmlinux:
 	$(Q)if [ ! -f bpf/vmlinux.h ]; then $(QUIET_BPFTOOL)bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h ; fi
