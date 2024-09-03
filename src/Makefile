@@ -14,20 +14,21 @@ ifeq ($(VERBOSE), 0)
 	QUIET_M4       = @echo '  M4       '$@;
 	QUIET_GEN      = @echo '  GEN      '$@;
 	QUIET_STRIP    = @echo '  STRIP    '$@;
-	QUIET_BPFTOOL  = echo '  BPFTOOL  '$@;
+	QUIET_BPFTOOL  = @echo '  BPFTOOL  '$@;
 endif
 
 all: sockstats
 
 LDFLAGS += -L$(LIBBPF_PATH) -l:libbpf.a -lelf -lz
 
-sockstats: %: %.c $(LIBBPF_ARCHIVE) vmlinux sockstats.skel.h
+sockstats: %: %.c $(LIBBPF_ARCHIVE) sockstats.skel.h
 	$(QUIET_CC)$(CC) -Wall $(CFLAGS) $< $(LDFLAGS) -o $@ 
 
 sockstats.skel.h: bpf/sockstats.bpf.o
-	$(Q)$(QUIET_BPFTOOL)bpftool gen skeleton ${<:.c=.o} > $@
+	$(QUIET_BPFTOOL)bpftool gen skeleton $< > $@
 
 bpf/sockstats.bpf.o: bpf/%.o: bpf/%.c
+	$(QUIET_BPFTOOL)bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
 	$(QUIET_CLANG)clang -S -target $(BPF_TARGET) \
 		-D __BPF_TRACING__ $(BPF_CFLAGS) -Wall -Wno-unused-value \
 		-Wno-pointer-sign -Wno-compare-distinct-pointer-types -Werror \
@@ -38,6 +39,3 @@ bpf/sockstats.bpf.o: bpf/%.o: bpf/%.c
 clean:
 	$(Q)echo "Cleaning sockstats..."
 	$(Q)rm -rf *.o sockstats.skel.h sockstats bpf/*.o bpf/*.ll bpf/vmlinux.h
-
-vmlinux:
-	$(Q)if [ ! -f bpf/vmlinux.h ]; then $(QUIET_BPFTOOL)bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h ; fi
