@@ -70,3 +70,4 @@ src/bpf/vmlinux.h
 src/sockstats.skel.h
 *.ll
 src/sockstats
+*.log

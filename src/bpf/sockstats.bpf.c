@@ -10,6 +10,7 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 typedef struct {
     struct pollfd* fds;
     int nbfds;
+    sockstats_syscall_t syscall;
 } poll_context_t;
 
 typedef struct {
@@ -17,6 +18,7 @@ typedef struct {
     fd_set* reads;
     fd_set* writes;
     fd_set* excepts;
+    sockstats_syscall_t syscall;
 } select_context_t;
 
 __u32 target_pid = 0;
@@ -38,6 +40,7 @@ static inline unsigned int FD_ISSET(int fd, fd_set* set)
 
     if (idx >= 0 && idx < 16) {
         unsigned long slot;
+        // FIXME: maybe we can generalize this again
         if (bpf_probe_read_user(&slot, sizeof(slot), set->fds_bits + idx) < 0) {
             bpf_printk("bpf_probe_read_user error reading 'fd_set' from user space.\n");
             return 0;
@@ -49,17 +52,15 @@ static inline unsigned int FD_ISSET(int fd, fd_set* set)
     return 0;
 }
 
-// TODO: also collect stats per syscall
+// struct {
+//     __uint(type, BPF_MAP_TYPE_HASH);
+//     __uint(max_entries, MAX_PROCESSES);
+//     __type(key, pid_t); // PID
+//     __uint(value_size, sizeof(struct syscalls)); // counters
+// } processes SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_PROCESSES);
-    __type(key, __u32); // PID
-    __type(value, __u32); // Counter
-} processes SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+    __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
     __uint(max_entries, MAX_SOCKETS);
     __type(key, __u32); // Sock FD
     __type(value, __u32); // Socket data map
@@ -81,13 +82,9 @@ static int is_socket(int fd)
     return 1;
 }
 
-static int tp_process_fd(__u32 fd)
+static int tp_process_fd(sockstats_syscall_t syscall, __u32 fd)
 {
-    __u64 pidtgid = bpf_get_current_pid_tgid();
-    __u32 tgid = pidtgid >> 32;
-    __u32 pid = pidtgid & 0xFFFFFFFF;
-
-    if (tgid != target_pid || !is_socket(fd))
+    if (!is_socket(fd))
         return 0;
 
     void* map = bpf_map_lookup_elem(&sockets, &fd);
@@ -96,13 +93,21 @@ static int tp_process_fd(__u32 fd)
         return 0;
     }
 
-    __u32 ncounter = 1;
-    __u32* counter = bpf_map_lookup_elem(map, &pid);
-    if (counter == NULL) {
-        if (bpf_map_update_elem(map, &pid, &ncounter, 0) < 0)
-            bpf_printk("Failed setting counter on FD=%d \n", fd);
-    } else
+    __u32 pid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+    struct syscalls* calls = bpf_map_lookup_elem(map, &pid);
+    if (calls == NULL) {
+        struct syscalls zeros = { 0 };
+        if (bpf_map_update_elem(map, &pid, &zeros, 0) < 0) {
+            bpf_printk("Failed initializing syscalls counters\n");
+            return 0;
+        }
+    }
+    calls = bpf_map_lookup_elem(map, &pid);
+
+    if (calls != NULL && syscall >= 0 && syscall < SOCKSTATS_SYSCALL_MAX) {
+        __u32* counter = &calls->counters[syscall];
         __sync_fetch_and_add(counter, 1);
+    }
 
     return 0;
 }
@@ -115,12 +120,12 @@ static long tp_poll_cb(__u32 index, poll_context_t* ctx)
         return 0;
     }
 
-    return tp_process_fd(pfd.fd);
+    return tp_process_fd(ctx->syscall, pfd.fd);
 }
 
-static int tp_poll_process(struct pollfd* fds, __u32 nbfds)
+static int tp_poll_process(sockstats_syscall_t syscall, struct pollfd* fds, __u32 nbfds)
 {
-    poll_context_t ctx = { .fds = fds, .nbfds = nbfds };
+    poll_context_t ctx = { .fds = fds, .nbfds = nbfds, .syscall = syscall };
     int ret = bpf_loop(nbfds, tp_poll_cb, &ctx, 0);
     if (ret < 0) {
         bpf_printk("tp_poll_process: bpf_loop failed and returned %d\n", ret);
@@ -133,20 +138,20 @@ static int tp_poll_process(struct pollfd* fds, __u32 nbfds)
 static long tp_select_cb(__u32 idx, select_context_t* ctx)
 {
     if (FD_ISSET(idx, ctx->reads))
-        tp_process_fd(idx);
+        tp_process_fd(ctx->syscall, idx);
 
     if (FD_ISSET(idx, ctx->writes))
-        tp_process_fd(idx);
+        tp_process_fd(ctx->syscall, idx);
 
     if (FD_ISSET(idx, ctx->excepts))
-        tp_process_fd(idx);
+        tp_process_fd(ctx->syscall, idx);
 
     return 0;
 }
 
-static int tp_select_process(__u32 nbfds, fd_set* reads, fd_set* writes, fd_set* excepts)
+static int tp_select_process(sockstats_syscall_t syscall, __u32 nbfds, fd_set* reads, fd_set* writes, fd_set* excepts)
 {
-    select_context_t ctx = { .nbfds = nbfds, .reads = reads, .writes = writes, .excepts = excepts };
+    select_context_t ctx = { .nbfds = nbfds, .reads = reads, .writes = writes, .excepts = excepts, .syscall = syscall };
     int ret = bpf_loop(nbfds, tp_select_cb, &ctx, 0);
     if (ret < 0) {
         bpf_printk("tp_select_process: bpf_loop failed and returned %d\n", ret);
@@ -169,31 +174,39 @@ int tracepoint__syscalls__sys_exit_socket(struct trace_event_raw_sys_exit* ctx)
         return 0;
     }
 
-    return tp_process_fd(fd);
+    return tp_process_fd(SOCKSTATS_SYSCALL_SOCKET, fd);
 }
 
 SEC("tracepoint/syscalls/sys_enter_bind")
 int tracepoint__syscalls__sys_enter_bind(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_BIND, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_listen")
 int tracepoint__syscalls__sys_enter_listen(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_LISTEN, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_accept")
 int tracepoint__syscalls__sys_enter_accept(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_ACCEPT, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_accept4")
 int tracepoint__syscalls__sys_enter_accept4(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_ACCEPT4, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_exit_accept")
@@ -209,7 +222,7 @@ int tracepoint__syscalls__sys_exit_accept(struct trace_event_raw_sys_exit* ctx)
         return 0;
     }
 
-    return tp_process_fd(fd);
+    return tp_process_fd(SOCKSTATS_SYSCALL_ACCEPT, fd);
 }
 
 SEC("tracepoint/syscalls/sys_exit_accept")
@@ -224,147 +237,187 @@ int tracepoint__syscalls__sys_exit_accept4(struct trace_event_raw_sys_exit* ctx)
         return 0;
     }
 
-    return tp_process_fd(fd);
+    return tp_process_fd(SOCKSTATS_SYSCALL_ACCEPT4, fd);
 }
 
 SEC("tracepoint/syscalls/sys_enter_recvfrom")
 int tracepoint__syscalls__sys_enter_recvfrom(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_RECVFROM, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_recvmsg")
 int tracepoint__syscalls__sys_enter_recvmsg(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_RECVMSG, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_recvmmsg")
 int tracepoint__syscalls__sys_enter_recvmmsg(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_RECVMMSG, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_sendto")
 int tracepoint__syscalls__sys_enter_sendto(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_SENDTO, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_sendmsg")
 int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_SENDMSG, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_sendmmsg")
 int tracepoint__syscalls__sys_enter_sendmmsg(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_SENDMMSG, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_getsockopt")
 int tracepoint__syscalls__sys_enter_getsockopt(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_GETSOCKOPT, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_setsockopt")
 int tracepoint__syscalls__sys_enter_setsockopt(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_SETSOCKOPT, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_getpeername")
 int tracepoint__syscalls__sys_enter_getpeername(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_GETPEERNAME, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_getsockname")
 int tracepoint__syscalls__sys_enter_getsockname(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_GETSOCKNAME, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_connect")
 int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_CONNECT, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_shutdown")
 int tracepoint__syscalls__sys_enter_shutdown(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_SHUTDOWN, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_read")
 int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_READ, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_readv")
 int tracepoint__syscalls__sys_enter_readv(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_READV, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_write")
 int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_WRITE, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_writev")
 int tracepoint__syscalls__sys_enter_writev(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_WRITEV, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_close")
 int tracepoint__syscalls__sys_enter_close(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_fd(FD(ctx));
+    caller_check();
+
+    return tp_process_fd(SOCKSTATS_SYSCALL_CLOSE, FD(ctx));
 }
 
 SEC("tracepoint/syscalls/sys_enter_poll")
 int tracepoint__syscalls__sys_enter_poll(struct trace_event_raw_sys_enter* ctx)
 {
+    caller_check();
+
     struct pollfd* fds = (struct pollfd*)((void*)ctx->args[0]);
     __u32 nfds = ctx->args[1];
-    return tp_poll_process(fds, nfds);
+    return tp_poll_process(SOCKSTATS_SYSCALL_POLL, fds, nfds);
 }
 
 SEC("tracepoint/syscalls/sys_enter_ppoll")
 int tracepoint__syscalls__sys_enter_ppoll(struct trace_event_raw_sys_enter* ctx)
 {
+    caller_check();
+
     struct pollfd* fds = (struct pollfd*)((void*)ctx->args[0]);
     __u32 nfds = ctx->args[1];
-    return tp_poll_process(fds, nfds);
+    return tp_poll_process(SOCKSTATS_SYSCALL_PPOLL, fds, nfds);
 }
 
 SEC("tracepoint/syscalls/sys_enter_select")
 int tracepoint__syscalls__sys_enter_select(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
+
     __u32 nbfds = ctx->args[0];
     fd_set* reads = (fd_set*)((void*)ctx->args[1]);
     fd_set* writes = (fd_set*)((void*)ctx->args[2]);
     fd_set* excepts = (fd_set*)((void*)ctx->args[3]);
 
-    return tp_select_process(nbfds, reads, writes, excepts);
+    return tp_select_process(SOCKSTATS_SYSCALL_SELECT, nbfds, reads, writes, excepts);
 }
 
 SEC("tracepoint/syscalls/sys_enter_pselect6")
 int tracepoint__syscalls__sys_enter_pselect6(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
+
     __u32 nbfds = ctx->args[0];
     fd_set* reads = (fd_set*)((void*)ctx->args[1]);
     fd_set* writes = (fd_set*)((void*)ctx->args[2]);
     fd_set* excepts = (fd_set*)((void*)ctx->args[3]);
 
-    return tp_select_process(nbfds, reads, writes, excepts);
+    return tp_select_process(SOCKSTATS_SYSCALL_PSELECT, nbfds, reads, writes, excepts);
 }

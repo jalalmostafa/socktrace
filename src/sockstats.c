@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <libbpf.h>
 #include <bpf.h>
+#include <limits.h>
 
 #include "sockstats.skel.h"
 #include "bpf/sockstats.bpf.h"
@@ -18,7 +19,10 @@ void help(char* program)
 {
     printf("Usage:\n"
            "%s <command>\n\n"
-           "An eBPF tool to monitor how many threads did a socket use\n\n",
+           "An eBPF tool to monitor how many threads did a socket use\n"
+           "    -h        Print this help message\n"
+           "    -t <nb>   Fetch statistics every <nb> seconds\n"
+           "\n\n",
         program);
 }
 
@@ -30,15 +34,19 @@ void launch_error(char** args, int argc)
     fprintf(stderr, "\n");
 }
 
-void handler(int)
+volatile bool quit = false;
+
+void handler(int signo)
 {
-    // no need to handle anything, we ignore it
+    if (signo == SIGTERM || signo == SIGINT) {
+        quit = true;
+        return;
+    }
 }
 
-int fetch_maps(struct sockstats_bpf* bpf)
+int fetch_maps(FILE* log, struct sockstats_bpf* bpf)
 {
     int ret = 0;
-    fprintf(stderr, "\nSocketFD\t\t|\t\tPID\t\t|\t\tTracked Syscalls\n");
     for (int i = 0; i < MAX_SOCKETS; i++) {
         __u32 mapid;
         if (bpf_map__lookup_elem(bpf->maps.sockets, &i, sizeof(__u32), &mapid, sizeof(__u32), 0) < 0) {
@@ -52,7 +60,8 @@ int fetch_maps(struct sockstats_bpf* bpf)
             break;
         }
 
-        __u32 *current = NULL, next, value;
+        __u32 *current = NULL, next;
+        struct syscalls value;
         do {
             ret = bpf_map_get_next_key(mapfd, current, &next);
             if (ret < 0) {
@@ -64,12 +73,23 @@ int fetch_maps(struct sockstats_bpf* bpf)
             current = &next;
             if (next != 0) {
                 bpf_map_lookup_elem(mapfd, current, &value);
-                fprintf(stderr, "%u\t\t\t|\t\t%u\t\t|\t\t%u\n", i, *current, value);
+                fprintf(log, "%u, %u", i, *current);
+                for (int j = 0; j < SOCKSTATS_SYSCALL_MAX; j++)
+                    fprintf(log, ", %u", value.counters[j]);
+                fprintf(log, "\n");
+                fflush(log);
             }
         } while (ret != 0);
         close(mapfd);
     }
 
+    return 0;
+}
+
+int fn(enum libbpf_print_level level, const char* str, va_list ap)
+{
+    if (level == LIBBPF_WARN)
+        return vprintf(str, ap);
     return 0;
 }
 
@@ -79,21 +99,41 @@ int main(int argc, char** argv)
     int ret = 0, wstatus;
     bool is_ebpf_attached = false;
     struct sockstats_bpf* bpf = NULL;
+    FILE* log = NULL;
+    int opt_sample_duration = 0;
 
     if (argc < 2) {
         help(argv[0]);
         return EXIT_FAILURE;
     }
 
-    if (argc == 2 && !strncmp("-h", argv[1], 3)) {
-        help(argv[0]);
-        ret = -1;
-        goto exit;
+    char opt;
+    int nbargs = 0;
+    while ((opt = getopt(argc, argv, "ht:")) != -1) {
+        switch (opt) {
+        case 'h':
+            help(argv[0]);
+            return EXIT_SUCCESS;
+
+        case 't':
+            opt_sample_duration = atoi(optarg);
+            break;
+
+        default:
+            fprintf(stderr, "Unknown argument '%c'\n", opt);
+            help(argv[0]);
+            return EXIT_FAILURE;
+        }
+
+        nbargs += 2 + (optarg == NULL ? 0 : strlen(optarg));
     }
 
-    char* program = argv[1];
-    argv++;
-    argc--;
+    if (nbargs == 0)
+        nbargs = 1;
+
+    char* program = argv[nbargs];
+    argv += nbargs;
+    argc -= nbargs;
 
     char pipe_data;
     int pipefd[2];
@@ -105,8 +145,15 @@ int main(int argc, char** argv)
 
     pid = fork();
     if (pid > 0) {
-        fprintf(stderr, "Launched process %d\n", pid);
+        fprintf(stderr, "Launching process %d...\n", pid);
+        char log_file[PATH_MAX];
+        snprintf(log_file, PATH_MAX, "sockstats-%d.log", pid);
+        log = fopen(log_file, "w");
+        libbpf_set_print(fn);
         close(pipefd[0]);
+
+        signal(SIGTERM, handler);
+        signal(SIGINT, handler);
 
         struct sigaction sa;
         sa.sa_handler = handler;
@@ -128,13 +175,24 @@ int main(int argc, char** argv)
 
         bpf->bss->target_pid = pid;
         int processes_mapfd = bpf_map_create(BPF_MAP_TYPE_HASH, "processes",
-            sizeof(__u32), sizeof(__u32), MAX_PROCESSES, NULL);
-        bpf_map__set_inner_map_fd(bpf->maps.sockets, processes_mapfd);
+            sizeof(__u32), sizeof(struct syscalls), MAX_PROCESSES, NULL);
+        if (processes_mapfd < 0) {
+            perror("bpf_map_create");
+            ret = -1;
+            goto exit;
+        }
+
+        if (bpf_map__set_inner_map_fd(bpf->maps.sockets, processes_mapfd) < 0) {
+            perror("bpf_map__set_inner_map_fd");
+            ret = -1;
+            close(processes_mapfd);
+            goto exit;
+        }
 
         ret = sockstats_bpf__load(bpf);
         close(processes_mapfd);
         if (ret < 0) {
-            fprintf(stderr, "Error loading eBPF program\n");
+            perror("Error loading eBPF program");
             goto exit;
         }
 
@@ -145,35 +203,53 @@ int main(int argc, char** argv)
         }
         is_ebpf_attached = true;
 
-        char child_map_name[CHLD_MAP_NAME_MAXLEN];
+        char processes_map_name[CHLD_MAP_NAME_MAXLEN];
         for (int i = 0; i < MAX_SOCKETS; i++) {
-            snprintf(child_map_name, CHLD_MAP_NAME_MAXLEN, "processes_%u", i);
-            int mapfd = bpf_map_create(BPF_MAP_TYPE_HASH, child_map_name, sizeof(__u32), sizeof(__u32), MAX_PROCESSES, NULL);
-            if (bpf_map__update_elem(bpf->maps.sockets, &i, sizeof(__u32), &mapfd, sizeof(__u32), 0) < 0) {
+            snprintf(processes_map_name, CHLD_MAP_NAME_MAXLEN, "processes_%u", i);
+            int proc_mapfd = bpf_map_create(BPF_MAP_TYPE_HASH,
+                processes_map_name, sizeof(__u32), sizeof(struct syscalls), MAX_PROCESSES, NULL);
+
+            if (bpf_map__update_elem(bpf->maps.sockets, &i, sizeof(__u32), &proc_mapfd, sizeof(__u32), 0) < 0) {
                 perror("bpf_map__update_elem");
                 ret = -1;
                 goto exit;
             }
+            close(proc_mapfd);
         }
 
         // Send signal to the child that we are ready
         // (void)! is used to ignore the -Wunused-result compiler warning
         (void)!write(pipefd[1], &pipe_data, sizeof(pipe_data));
 
-        while (1) {
-            alarm(1);
+        fprintf(log, "SocketFD, PID");
+        for (int i = 0; i < SOCKSTATS_SYSCALL_MAX; i++)
+            fprintf(log, ", %s", syscallstr((sockstats_syscall_t)i));
+        fprintf(log, "\n");
+        fflush(log);
+
+        while (!quit) {
+            if (opt_sample_duration > 0)
+                alarm(opt_sample_duration);
 
             // Wait for the child process to finish
             if (waitpid(pid, &wstatus, 0) == -1) {
                 // If SIGALRM interrupt was received
-                if (errno == EINTR)
-                    if (fetch_maps(bpf) < 0)
+                if (errno == EINTR && opt_sample_duration > 0)
+                    if (fetch_maps(log, bpf) < 0)
                         break;
 
-            } else if (WIFEXITED(wstatus))
+            } else if (WIFEXITED(wstatus)) {
+                if (opt_sample_duration <= 0)
+                    fetch_maps(log, bpf);
                 break;
+            }
         }
-        alarm(0);
+
+        if (opt_sample_duration > 0)
+            alarm(0);
+        else
+            fetch_maps(log, bpf);
+
     } else if (pid == 0) {
         close(pipefd[1]);
         // Wait the parent to be ready to intercept the child, wait for a signal
@@ -193,6 +269,9 @@ int main(int argc, char** argv)
 
 exit:
     if (pid > 0) {
+        if (log)
+            fclose(log);
+
         if (is_ebpf_attached)
             sockstats_bpf__detach(bpf);
 
