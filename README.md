@@ -5,7 +5,6 @@ A tool to discover BSD sockets concurrency statistics using eBPF
 
 - [ ] Use TUI to print output
 - [ ] Add option to output to file
-- [ ] Add support for epoll hooks
 
 ## Usage
 
@@ -14,6 +13,9 @@ Usage:
 ./src/sockstats <command>
 
 An eBPF tool to monitor how many threads did a socket use
+    -h        Print this help message
+    -t <nb>   Fetch statistics every <nb> seconds.
+              Default fetch at end of program or received signal to quit.
 ```
 
 ## Build

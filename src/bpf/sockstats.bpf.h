@@ -40,6 +40,12 @@ enum sockstats_syscall {
     SOCKSTATS_SYSCALL_PPOLL,
     SOCKSTATS_SYSCALL_SELECT,
     SOCKSTATS_SYSCALL_PSELECT,
+    SOCKSTATS_SYSCALL_EPOLL_CREATE,
+    SOCKSTATS_SYSCALL_EPOLL_CREATE1,
+    SOCKSTATS_SYSCALL_EPOLL_CTL,
+    SOCKSTATS_SYSCALL_EPOLL_WAIT,
+    SOCKSTATS_SYSCALL_EPOLL_PWAIT,
+    SOCKSTATS_SYSCALL_EPOLL_PWAIT2,
     SOCKSTATS_SYSCALL_MAX
 };
 
@@ -72,6 +78,12 @@ const char* syscall_strings[] = {
     [SOCKSTATS_SYSCALL_PPOLL] = "ppoll",
     [SOCKSTATS_SYSCALL_SELECT] = "select",
     [SOCKSTATS_SYSCALL_PSELECT] = "pselect",
+    [SOCKSTATS_SYSCALL_EPOLL_CREATE] = "epoll_create",
+    [SOCKSTATS_SYSCALL_EPOLL_CREATE1] = "epoll_create1",
+    [SOCKSTATS_SYSCALL_EPOLL_CTL] = "epoll_ctl",
+    [SOCKSTATS_SYSCALL_EPOLL_WAIT] = "epoll_wait",
+    [SOCKSTATS_SYSCALL_EPOLL_PWAIT] = "epoll_pwait",
+    [SOCKSTATS_SYSCALL_EPOLL_PWAIT2] = "epoll_pwait2",
 };
 
 static inline const char* syscallstr(sockstats_syscall_t syscall)

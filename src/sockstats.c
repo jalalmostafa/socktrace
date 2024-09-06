@@ -21,7 +21,8 @@ void help(char* program)
            "%s <command>\n\n"
            "An eBPF tool to monitor how many threads did a socket use\n"
            "    -h        Print this help message\n"
-           "    -t <nb>   Fetch statistics every <nb> seconds\n"
+           "    -t <nb>   Fetch statistics every <nb> seconds.\n"
+           "              Default fetch at end of program or received signal to quit.\n"
            "\n\n",
         program);
 }
