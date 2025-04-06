@@ -52,13 +52,6 @@ static inline unsigned int FD_ISSET(int fd, fd_set* set)
     return 0;
 }
 
-// struct {
-//     __uint(type, BPF_MAP_TYPE_HASH);
-//     __uint(max_entries, MAX_PROCESSES);
-//     __type(key, pid_t); // PID
-//     __uint(value_size, sizeof(struct syscalls)); // counters
-// } processes SEC(".maps");
-
 struct {
     __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
     __uint(max_entries, MAX_SOCKETS);
