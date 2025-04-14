@@ -1,41 +1,8 @@
+all:
+	@go generate
+	@go build
 
-CFLAGS += -g -O2 -std=gnu11 -I$(LIBBPF_PATH)
-
-BPF_CFLAGS += -Ibpf -I$(LIBBPF_PATH)
-
-BPF_TARGET := bpf
-
-ifeq ($(VERBOSE), 0)
-	QUIET_CC       = @echo '  CC       '$@;
-	QUIET_CLANG    = @echo '  CLANG    '$@;
-	QUIET_LLC      = @echo '  LLC      '$@;
-	QUIET_LINK     = @echo '  LINK     '$@;
-	QUIET_INSTALL  = @echo '  INSTALL  '$@;
-	QUIET_M4       = @echo '  M4       '$@;
-	QUIET_GEN      = @echo '  GEN      '$@;
-	QUIET_STRIP    = @echo '  STRIP    '$@;
-	QUIET_BPFTOOL  = @echo '  BPFTOOL  '$@;
-endif
-
-all: sockstats
-
-LDFLAGS += -L$(LIBBPF_PATH) -l:libbpf.a -lelf -lz
-
-sockstats: %: %.c $(LIBBPF_ARCHIVE) sockstats.skel.h
-	$(QUIET_CC)$(CC) -Wall $(CFLAGS) $< $(LDFLAGS) -o $@ 
-
-sockstats.skel.h: bpf/sockstats.bpf.o
-	$(QUIET_BPFTOOL)bpftool gen skeleton $< > $@
-
-bpf/sockstats.bpf.o: bpf/%.o: bpf/%.c
-	$(QUIET_BPFTOOL)bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
-	$(QUIET_CLANG)clang -S -target $(BPF_TARGET) \
-		-D __BPF_TRACING__ $(BPF_CFLAGS) -Wall -Wno-unused-value \
-		-Wno-pointer-sign -Wno-compare-distinct-pointer-types -Werror \
-		-O2 -emit-llvm -c -g -o ${@:.o=.ll} $<
-	$(QUIET_LLC)llc -march=$(BPF_TARGET) -filetype=obj -o $@ ${@:.o=.ll}
-	$(QUIET_STRIP)llvm-strip -g $@
-
+.PHONY: clean
 clean:
-	$(Q)echo "Cleaning sockstats..."
-	$(Q)rm -rf *.o sockstats.skel.h sockstats bpf/*.o bpf/*.ll bpf/vmlinux.h
+	@echo "Cleaning socktrace..."
+	@rm -rf *.o sockstats.skel.h sockstats bpf/*.o bpf/*.ll socktraceebpf_bpfe*.go socktrace

@@ -42,15 +42,6 @@
 *.idb
 *.pdb
 
-# Kernel Module Compile Results
-*.mod*
-*.cmd
-.tmp_versions/
-modules.order
-Module.symvers
-Mkfile.old
-dkms.conf
-
 ## VS Code
 .vscode/*
 !.vscode/settings.json
@@ -71,3 +62,5 @@ src/sockstats.skel.h
 *.ll
 src/sockstats
 *.log
+src/socktrace
+socktraceebpf_bpfe*
