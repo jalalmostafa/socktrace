@@ -169,10 +169,6 @@ static inline int tp_new_fd(sockstats_syscall_t syscall, int fd)
 SEC("tracepoint/syscalls/sys_exit_socket")
 int tracepoint__syscalls__sys_exit_socket(struct trace_event_raw_sys_exit* ctx)
 {
-    __u64 pidtgid = bpf_get_current_pid_tgid();
-    __u32 tgid = pidtgid >> 32;
-    bpf_printk("socket %d - tgid %d - target pid %d\n", ctx->ret, tgid, target_pid);
-
     caller_check();
 
     int fd = ctx->ret;

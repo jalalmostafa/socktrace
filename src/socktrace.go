@@ -308,7 +308,7 @@ func main() {
 	flag.DurationVar(&args.duration, "d", 0, "Run duration.")
 	flag.DurationVar(&args.sampling, "s", 0, "Set sampling period")
 	flag.Usage = func() {
-		fmt.Printf("Usage: %s [options] program args..\n", flag.Arg(0))
+		fmt.Printf("Usage: %s [options] program args..\n", os.Args[0])
 		flag.PrintDefaults()
 		os.Exit(1)
 	}

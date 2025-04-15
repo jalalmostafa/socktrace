@@ -1,29 +1,30 @@
-# sockstats
-A tool to discover BSD sockets concurrency statistics using eBPF
+# Socktrace
+
+A tool to trace parallel system calls to BSD sockets using eBPF.
+This tool answers the question: how many times has socket syscalls been called by each process in a program?
 
 ## To do
 
 - [ ] Use TUI to print output
-- [ ] Add option to output to file
 
 ## Usage
 
 ```bash
 Usage:
-./src/sockstats <command>
-
-An eBPF tool to monitor how many threads did a socket use
-    -h        Print this help message
-    -t <nb>   Fetch statistics every <nb> seconds.
-              Default fetch at end of program or received signal to quit.
+Usage: ./socktrace [options] program args..
+  -d duration
+        Run duration.
+  -h    Prints this help text.
+  -s duration
+        Set sampling period
 ```
 
 ## Build
 
 ```bash
 # install dependencies
-apt install clang llvm libelf-dev build-essential linux-tools-common linux-tools-generic linux-headers-$(uname -r) linux-tools-$(uname -r)-generic
-git clone --recursive https://github.com/jalalmostafa/sockstats.git
-cd sockstats
+apt install clang llvm libelf-dev build-essential linux-tools-common linux-tools-generic linux-headers-$(uname -r) linux-tools-$(uname -r)-generic libbpf-dev golang
+git clone https://github.com/jalalmostafa/socktrace.git
+cd socktrace
 make
 ```
