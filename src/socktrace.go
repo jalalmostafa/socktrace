@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -8,13 +11,14 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
-	"time"
-	"unsafe"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/cilium/ebpf/ringbuf"
 )
 
 const (
@@ -24,14 +28,27 @@ const (
 )
 
 type SocktraceArgs struct {
-	help     bool
-	duration time.Duration
-	sampling time.Duration
+	help bool
+	file bool
 }
 
-type SocktracePerfLog struct {
-	pid  int
-	file *os.File
+type SocketEvent struct {
+	Cookie         uint64
+	ParentCookie   uint64
+	TimestampNs    uint64
+	Pid            uint32
+	Tgid           uint32
+	Operation      uint32
+	FileDescriptor uint32
+}
+
+type SockTracer struct {
+	Objs        SocktraceEbpfObjects
+	Context     context.Context
+	Links       []link.Link
+	Canceller   context.CancelFunc
+	EventsChan  chan SocketEvent
+	EventReader *ringbuf.Reader
 }
 
 const (
@@ -105,76 +122,24 @@ var socktrace_syscalls = map[int]string{
 	SOCKTRACE_SYSCALL_EPOLL_PWAIT2:  "epoll_pwait2",
 }
 
-func CreateWithHeaders(pid int) (*SocktracePerfLog, error) {
-	var err error
-	perf := new(SocktracePerfLog)
-	perf.pid = pid
-	path := fmt.Sprintf("socktrace-%d.csv", pid)
-	perf.file, err = os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
-
-	if err == nil {
-		_, err = perf.file.WriteString("SocketFD, PID")
-
-		if err != nil {
-			goto end
-		}
-
-		for _, val := range socktrace_syscalls {
-			s := fmt.Sprintf(", %s", val)
-			_, err = perf.file.WriteString(s)
-			if err != nil {
-				goto end
-			}
-		}
-
-		perf.file.WriteString("\n")
-		err = perf.file.Sync()
-	}
-end:
-	return perf, err
-}
-
-func (perf *SocktracePerfLog) WriteMeasurement(socketfd int, pid uint32, measurement [SOCKTRACE_SYSCALL_MAX]uint32) error {
-	if perf.file == nil {
-		return errors.New("invalid file")
-	}
-
-	var csv strings.Builder
-	substring := fmt.Sprintf("%d,%d", socketfd, pid)
-	csv.WriteString(substring)
-	for _, value := range measurement {
-		substring = fmt.Sprintf(", %d", value)
-		csv.WriteString(substring)
-	}
-	csv.WriteRune('\n')
-
-	_, err := perf.file.WriteString(csv.String())
-	if err != nil {
-		err = perf.file.Sync()
-	}
-	return err
-}
-
-func (perf *SocktracePerfLog) Close() error {
-	if perf.file != nil {
-		return perf.file.Close()
-	}
-
-	return nil
-}
-
 func LaunchProgram(cmd []string) (int, error) {
 	if len(cmd) == 0 {
 		return -1, errors.New("invalid program")
 	}
 
-	pid, _, errno := syscall.RawSyscall(syscall.SYS_FORK, 0, 0, 0)
+	pid_ptr, _, errno := syscall.RawSyscall(syscall.SYS_FORK, 0, 0, 0)
+	pid := int(pid_ptr)
 
 	if pid != 0 {
 		if errno != 0 {
 			return 0, os.NewSyscallError("fork", errno)
 		}
-		return int(pid), nil
+		return pid, nil
+	}
+
+	_, err := syscall.Setsid()
+	if err != nil {
+		log.Fatalln(err.Error())
 	}
 
 	file, err := os.OpenFile(IPC_PATH, os.O_RDWR, os.ModeNamedPipe)
@@ -198,106 +163,173 @@ func LaunchProgram(cmd []string) (int, error) {
 	return 0, err
 }
 
-type SyscallCounters struct {
-	Counters [SOCKTRACE_SYSCALL_MAX]uint32
+func WaitProgram(pid int) (bool, int) {
+	var ws syscall.WaitStatus
+	var rusage syscall.Rusage
+	wpid, err := syscall.Wait4(pid, &ws, syscall.WNOHANG, &rusage)
+
+	if wpid == pid && err == nil && ws.Exited() {
+		return true, ws.ExitStatus()
+	}
+
+	return false, -1
 }
 
-func (socktrace_objects *SocktraceEbpfObjects) SetupObjects(pid uint32, valuesz uint32) (*ebpf.Collection, error) {
-	processesMapSpec := ebpf.MapSpec{
-		Type:       ebpf.Hash,
-		KeySize:    4,
-		ValueSize:  valuesz,
-		MaxEntries: MAX_PROCESSES,
+func TerminateProgram(pid int) error {
+	process, err := os.FindProcess(pid)
+
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
 
-	collection_spec, err := LoadSocktraceEbpf()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	err = collection_spec.Variables["target_pid"].Set(pid)
-	if err != nil {
-		return nil, err
-	}
-
-	socketsMapSpec := collection_spec.Maps["sockets"]
-	socketsMapSpec.InnerMap = &processesMapSpec
-
-	for i := range MAX_SOCKETS {
-		innerMapSpec := ebpf.MapSpec{
-			Name:       fmt.Sprintf("processes_%d", i),
-			Type:       ebpf.Hash,
-			KeySize:    4,
-			ValueSize:  valuesz,
-			MaxEntries: MAX_PROCESSES,
+	if err = process.Signal(syscall.SIGTERM); err != nil {
+		if err := process.Kill(); err != nil {
+			return err
 		}
-
-		procmap, err := ebpf.NewMap(&innerMapSpec)
-		if err != nil {
-			return nil, err
-		}
-
-		socketsMapSpec.Contents = append(socketsMapSpec.Contents, ebpf.MapKV{Key: uint32(i), Value: procmap})
 	}
 
-	err = collection_spec.LoadAndAssign(socktrace_objects, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	collection, err := ebpf.NewCollection(collection_spec)
-	return collection, err
+	return nil
 }
 
-func AttachMonitor(pid uint32) (*SocktraceEbpfObjects, []link.Link, error) {
-	var counters SyscallCounters
-	var links []link.Link
-
-	socktrace_objects := new(SocktraceEbpfObjects)
-	valuesz := uint32(unsafe.Sizeof(counters))
-	collection, err := socktrace_objects.SetupObjects(pid, valuesz)
+func ReadSymbolAddress(symbol string) (uint64, error) {
+	kallsyms, err := os.ReadFile("/proc/kallsyms")
 	if err != nil {
-		goto exit
+		return 0, err
 	}
-
-	for name, prog := range collection.Programs {
-		name = strings.Split(name, "tracepoint__syscalls__")[1]
-		l, err := link.Tracepoint("syscalls", name, prog, nil)
-		if err != nil {
-			goto exit
+	symbols := strings.Split(string(kallsyms), "\n")
+	for _, line := range symbols {
+		parts := strings.Split(line, " ")
+		if parts[2] == symbol {
+			return strconv.ParseUint(parts[0], 16, 64)
 		}
 
-		links = append(links, l)
 	}
+
+	return 0, errors.New("Symbol " + symbol + " Not Found")
+}
+
+func (tracer *SockTracer) AttachMonitor(pid uint32) error {
+	epoll_fops_ptr, err := ReadSymbolAddress("eventpoll_fops")
+	if err != nil {
+		return err
+	}
+
+	log.Printf("Address of eventpoll_fops is %x", epoll_fops_ptr)
+
+	err = LoadSocktraceEbpfObjects(&tracer.Objs, nil)
+	if err != nil {
+		return nil
+	}
+
+	err = tracer.Objs.TargetPid.Set(pid)
+	if err != nil {
+		return nil
+	}
+
+	err = tracer.Objs.EventpollFopsPtr.Set(epoll_fops_ptr)
+	if err != nil {
+		return nil
+	}
+
+	tracer_programs := reflect.ValueOf(tracer.Objs.SocktraceEbpfPrograms)
+	for idx := range tracer_programs.NumField() {
+		prog, ok := tracer_programs.Field(idx).Interface().(*ebpf.Program)
+		if !ok {
+			return errors.New("Invalid Field Type")
+		}
+
+		prog_info, err := prog.Info()
+		if err != nil {
+			return err
+		}
+
+		func_info, err := prog_info.FuncInfos()
+		if err != nil {
+			return err
+		}
+
+		var lnk link.Link
+		prog_name := func_info[0].Func.Name
+		if prog_name == "trace_fd_install" {
+			lnk, err = link.AttachTracing(link.TracingOptions{
+				Program:    prog,
+				AttachType: ebpf.AttachTraceFEntry,
+			})
+		} else {
+			prog_name = strings.Split(prog_name, "tracepoint__syscalls__")[1]
+			lnk, err = link.Tracepoint("syscalls", prog_name, prog, nil)
+		}
+
+		if err != nil {
+			return err
+		}
+
+		tracer.Links = append(tracer.Links, lnk)
+	}
+
+	tracer.EventReader, err = ringbuf.NewReader(tracer.Objs.Events)
+	if err != nil {
+		return err
+	}
+
+	tracer.Context, tracer.Canceller = context.WithCancel(context.Background())
+	tracer.EventsChan = make(chan SocketEvent, 100)
+
+	go func() {
+		for {
+			select {
+			case <-tracer.Context.Done():
+				return
+			default:
+				event, err := tracer.FetchEvent()
+				if err != nil {
+					if errors.Is(err, ringbuf.ErrClosed) {
+						return
+					}
+					continue
+				}
+				select {
+				case tracer.EventsChan <- event:
+				case <-tracer.Context.Done():
+					return
+				}
+			}
+		}
+	}()
+
 	log.Println("Loaded eBPF Objects!")
 
-exit:
-	return socktrace_objects, links, err
+	return nil
 }
 
-func (log *SocktracePerfLog) SaveMeasurement(objs *SocktraceEbpfObjects) error {
-	var processes *ebpf.Map
-	var key uint32
-	var val SyscallCounters
-	var err error
+func (tracer *SockTracer) FetchEvent() (SocketEvent, error) {
+	var event SocketEvent
 
-forsockets:
-	for fd := range MAX_SOCKETS {
-		err = objs.Sockets.Lookup(uint32(fd), &processes)
-		if err != nil {
-			break forsockets
-		}
-
-		mapIterator := processes.Iterate()
-		for mapIterator.Next(&key, &val) {
-			log.WriteMeasurement(fd, key, val.Counters)
-		}
-
-		if processes != nil {
-			processes.Close()
-		}
+	record, err := tracer.EventReader.Read()
+	if err != nil {
+		return event, err
 	}
-	return err
+
+	err = binary.Read(bytes.NewBuffer(record.RawSample), binary.LittleEndian, &event)
+	if err != nil {
+		return event, err
+	}
+
+	return event, nil
+}
+
+func (tracer *SockTracer) Close() {
+	tracer.EventReader.Close()
+	close(tracer.EventsChan)
+	tracer.Canceller()
+	for _, l := range tracer.Links {
+		l.Close()
+	}
+	tracer.Objs.Close()
 }
 
 func main() {
@@ -305,8 +337,7 @@ func main() {
 	log.SetPrefix("[Socktrace] ")
 	log.SetFlags(log.Ldate | log.Ltime)
 	flag.BoolVar(&args.help, "h", false, "Prints this help text.")
-	flag.DurationVar(&args.duration, "d", 0, "Run duration.")
-	flag.DurationVar(&args.sampling, "s", 0, "Set sampling period")
+	flag.BoolVar(&args.file, "f", false, "Output Events to a CSV file.")
 	flag.Usage = func() {
 		fmt.Printf("Usage: %s [options] program args..\n", os.Args[0])
 		flag.PrintDefaults()
@@ -318,12 +349,12 @@ func main() {
 		flag.Usage()
 	}
 
-	break_flag := make(chan bool, 1)
+	break_flag := make(chan bool)
 
 	program_cmdline := flag.Args()
 
 	if len(program_cmdline) == 0 {
-		fmt.Println("Program not specified!")
+		log.Fatalln("Program not specified!")
 	}
 
 	sigs := make(chan os.Signal, 1)
@@ -337,43 +368,34 @@ func main() {
 	os.Remove(IPC_PATH)
 	err := syscall.Mkfifo(IPC_PATH, 0666)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalln(err.Error())
 	}
 
 	pid, err := LaunchProgram(program_cmdline)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalln(err.Error())
 	}
 
-	if pid == 0 {
-		log.Fatalln("Program process exited")
-	}
 	log.Printf("Launched Program with PID(%d): %v", pid, program_cmdline)
 
-	perflogs, err := CreateWithHeaders(pid)
+	var logger *SocktraceEventLog = nil
+	if args.file {
+		logger, err := CreateEventLoggerWithHeaders(pid)
+		if err != nil {
+			log.Fatalln(err.Error())
+		}
+		defer logger.Close()
+	}
+
+	tracer := new(SockTracer)
+	err = tracer.AttachMonitor(uint32(pid))
 	if err != nil {
 		log.Fatalln(err)
 	}
 
-	defer perflogs.Close()
+	defer tracer.Close()
 
-	objs, links, err := AttachMonitor(uint32(pid))
-	if err != nil {
-		log.Fatalln(err)
-	}
-	defer objs.Close()
 	log.Println("Attached eBPF programs!")
-
-	var duration_chnl <-chan time.Time
-	var sampling_chnl <-chan time.Time
-
-	if args.duration > 0 {
-		duration_chnl = time.After(args.duration)
-	}
-
-	if args.sampling > 0 {
-		sampling_chnl = time.Tick(args.sampling)
-	}
 
 	file, err := os.OpenFile(IPC_PATH, os.O_CREATE|os.O_RDWR, os.ModeNamedPipe)
 	if err != nil {
@@ -384,37 +406,34 @@ func main() {
 	if err != nil {
 		log.Fatalln(err.Error())
 	}
-	log.Println("Started monitoring")
+	log.Println("Started monitoring!")
 
 loop:
 	for {
 		select {
 		case <-break_flag:
-			fmt.Println("Signal Received.")
+			fmt.Println("Signal Received!")
 			break loop
-		case <-duration_chnl:
-			log.Printf("Timeout. Exiting after %v\n", args.duration)
-			fmt.Println("Timeout.")
-			break loop
-		case <-sampling_chnl:
-			perflogs.SaveMeasurement(objs)
+		case event := <-tracer.EventsChan:
+			if logger != nil {
+				logger.WriteEvent(&event)
+			} else {
+				log.Printf("%d,%d,%d,%d,%d,%s,%d\n",
+					event.Cookie, event.ParentCookie, event.TimestampNs,
+					event.Pid, event.Tgid, socktrace_syscalls[int(event.Operation)],
+					event.FileDescriptor)
+			}
 		default:
-			var ws syscall.WaitStatus
-			var rusage syscall.Rusage
-			wpid, err := syscall.Wait4(pid, &ws, syscall.WNOHANG, &rusage)
-
-			if wpid == pid && err == nil && ws.Exited() {
-				fmt.Println("Exiting...")
-				log.Printf("Program process(%d) exited with status=%d", wpid, ws.ExitStatus())
+			exited, exit_status := WaitProgram(pid)
+			if exited {
+				log.Printf("Program process(%d) exited with status=%d", pid, exit_status)
 				break loop
 			}
 		}
 	}
 
-	perflogs.SaveMeasurement(objs)
-
-	for _, l := range links {
-		l.Close()
+	if err := TerminateProgram(pid); err != nil {
+		log.Fatalln("Failed terminating process", err.Error())
 	}
 
 	log.Println("Finished")

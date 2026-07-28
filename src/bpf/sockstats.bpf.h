@@ -1,100 +1,135 @@
-#ifndef SOCKSTATS_BPF_H
-#define SOCKSTATS_BPF_H
+#ifndef SOCKTRACE_BPF_H
+#define SOCKTRACE_BPF_H
 
-#define SOCKSTATS_NFDBITS (8 * sizeof(unsigned long))
-#define SOCKSTATS_NFDBITS_MASK (SOCKSTATS_NFDBITS - 1)
-#define SOCKSTATS_LENGTH (1024 / SOCKSTATS_NFDBITS)
+#include "vmlinux.h"
+
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
+
+#define SOCKTRACE_NFDBITS (8 * sizeof(unsigned long))
+#define SOCKTRACE_NFDBITS_MASK (SOCKTRACE_NFDBITS - 1)
+#define SOCKTRACE_LENGTH (1024 / SOCKTRACE_NFDBITS)
 
 #define MAX_PROCESSES 256
-#define MAX_SOCKETS SOCKSTATS_NFDBITS
+#define MAX_SOCKETS SOCKTRACE_NFDBITS
 
-#define FIRST_ARG(ctx) (ctx->args[0])
-#define FD(ctx) (FIRST_ARG(ctx))
+#define ARG(ctx, index) BPF_CORE_READ((ctx), args[index])
+#define FD(ctx) ARG(ctx, 0)
+#define RET(ctx) BPF_CORE_READ((ctx), ret)
 
-#define REGSOCK 1
-
-enum sockstats_syscall {
-    SOCKSTATS_SYSCALL_SOCKET,
-    SOCKSTATS_SYSCALL_BIND,
-    SOCKSTATS_SYSCALL_LISTEN,
-    SOCKSTATS_SYSCALL_CONNECT,
-    SOCKSTATS_SYSCALL_ACCEPT,
-    SOCKSTATS_SYSCALL_ACCEPT4,
-    SOCKSTATS_SYSCALL_RECVFROM,
-    SOCKSTATS_SYSCALL_RECVMSG,
-    SOCKSTATS_SYSCALL_RECVMMSG,
-    SOCKSTATS_SYSCALL_SENDTO,
-    SOCKSTATS_SYSCALL_SENDMSG,
-    SOCKSTATS_SYSCALL_SENDMMSG,
-    SOCKSTATS_SYSCALL_SETSOCKOPT,
-    SOCKSTATS_SYSCALL_GETSOCKOPT,
-    SOCKSTATS_SYSCALL_GETPEERNAME,
-    SOCKSTATS_SYSCALL_GETSOCKNAME,
-    SOCKSTATS_SYSCALL_SHUTDOWN,
-    SOCKSTATS_SYSCALL_READ,
-    SOCKSTATS_SYSCALL_READV,
-    SOCKSTATS_SYSCALL_WRITE,
-    SOCKSTATS_SYSCALL_WRITEV,
-    SOCKSTATS_SYSCALL_CLOSE,
-    SOCKSTATS_SYSCALL_POLL,
-    SOCKSTATS_SYSCALL_PPOLL,
-    SOCKSTATS_SYSCALL_SELECT,
-    SOCKSTATS_SYSCALL_PSELECT,
-    SOCKSTATS_SYSCALL_EPOLL_CREATE,
-    SOCKSTATS_SYSCALL_EPOLL_CREATE1,
-    SOCKSTATS_SYSCALL_EPOLL_CTL,
-    SOCKSTATS_SYSCALL_EPOLL_WAIT,
-    SOCKSTATS_SYSCALL_EPOLL_PWAIT,
-    SOCKSTATS_SYSCALL_EPOLL_PWAIT2,
-    SOCKSTATS_SYSCALL_MAX
+enum socktrace_syscall {
+    SOCKTRACE_SYSCALL_SOCKET,
+    SOCKTRACE_SYSCALL_BIND,
+    SOCKTRACE_SYSCALL_LISTEN,
+    SOCKTRACE_SYSCALL_CONNECT,
+    SOCKTRACE_SYSCALL_ACCEPT,
+    SOCKTRACE_SYSCALL_ACCEPT4,
+    SOCKTRACE_SYSCALL_RECVFROM,
+    SOCKTRACE_SYSCALL_RECVMSG,
+    SOCKTRACE_SYSCALL_RECVMMSG,
+    SOCKTRACE_SYSCALL_SENDTO,
+    SOCKTRACE_SYSCALL_SENDMSG,
+    SOCKTRACE_SYSCALL_SENDMMSG,
+    SOCKTRACE_SYSCALL_SETSOCKOPT,
+    SOCKTRACE_SYSCALL_GETSOCKOPT,
+    SOCKTRACE_SYSCALL_GETPEERNAME,
+    SOCKTRACE_SYSCALL_GETSOCKNAME,
+    SOCKTRACE_SYSCALL_SHUTDOWN,
+    SOCKTRACE_SYSCALL_READ,
+    SOCKTRACE_SYSCALL_READV,
+    SOCKTRACE_SYSCALL_WRITE,
+    SOCKTRACE_SYSCALL_WRITEV,
+    SOCKTRACE_SYSCALL_CLOSE,
+    SOCKTRACE_SYSCALL_POLL,
+    SOCKTRACE_SYSCALL_PPOLL,
+    SOCKTRACE_SYSCALL_SELECT,
+    SOCKTRACE_SYSCALL_PSELECT,
+    SOCKTRACE_SYSCALL_EPOLL_CREATE,
+    SOCKTRACE_SYSCALL_EPOLL_CREATE1,
+    SOCKTRACE_SYSCALL_EPOLL_CTL,
+    SOCKTRACE_SYSCALL_EPOLL_WAIT,
+    SOCKTRACE_SYSCALL_EPOLL_PWAIT,
+    SOCKTRACE_SYSCALL_EPOLL_PWAIT2,
+    SOCKTRACE_SYSCALL_MAX
 };
 
-typedef enum sockstats_syscall sockstats_syscall_t;
+typedef enum socktrace_syscall socktrace_syscall_t;
 
 const char* syscall_strings[] = {
-    [SOCKSTATS_SYSCALL_SOCKET] = "socket",
-    [SOCKSTATS_SYSCALL_BIND] = "bind",
-    [SOCKSTATS_SYSCALL_LISTEN] = "listen",
-    [SOCKSTATS_SYSCALL_CONNECT] = "connect",
-    [SOCKSTATS_SYSCALL_ACCEPT] = "accept",
-    [SOCKSTATS_SYSCALL_ACCEPT4] = "accept4",
-    [SOCKSTATS_SYSCALL_RECVFROM] = "recvfrom",
-    [SOCKSTATS_SYSCALL_RECVMSG] = "recvmsg",
-    [SOCKSTATS_SYSCALL_RECVMMSG] = "recvmmsg",
-    [SOCKSTATS_SYSCALL_SENDTO] = "sendto",
-    [SOCKSTATS_SYSCALL_SENDMSG] = "sendmsg",
-    [SOCKSTATS_SYSCALL_SENDMMSG] = "sendmmsg",
-    [SOCKSTATS_SYSCALL_SETSOCKOPT] = "setsockopt",
-    [SOCKSTATS_SYSCALL_GETSOCKOPT] = "getsockopt",
-    [SOCKSTATS_SYSCALL_GETPEERNAME] = "getpeername",
-    [SOCKSTATS_SYSCALL_GETSOCKNAME] = "getsockname",
-    [SOCKSTATS_SYSCALL_SHUTDOWN] = "shutdown",
-    [SOCKSTATS_SYSCALL_READ] = "read",
-    [SOCKSTATS_SYSCALL_READV] = "readv",
-    [SOCKSTATS_SYSCALL_WRITE] = "write",
-    [SOCKSTATS_SYSCALL_WRITEV] = "writev",
-    [SOCKSTATS_SYSCALL_CLOSE] = "close",
-    [SOCKSTATS_SYSCALL_POLL] = "poll",
-    [SOCKSTATS_SYSCALL_PPOLL] = "ppoll",
-    [SOCKSTATS_SYSCALL_SELECT] = "select",
-    [SOCKSTATS_SYSCALL_PSELECT] = "pselect",
-    [SOCKSTATS_SYSCALL_EPOLL_CREATE] = "epoll_create",
-    [SOCKSTATS_SYSCALL_EPOLL_CREATE1] = "epoll_create1",
-    [SOCKSTATS_SYSCALL_EPOLL_CTL] = "epoll_ctl",
-    [SOCKSTATS_SYSCALL_EPOLL_WAIT] = "epoll_wait",
-    [SOCKSTATS_SYSCALL_EPOLL_PWAIT] = "epoll_pwait",
-    [SOCKSTATS_SYSCALL_EPOLL_PWAIT2] = "epoll_pwait2",
+    [SOCKTRACE_SYSCALL_SOCKET] = "socket",
+    [SOCKTRACE_SYSCALL_BIND] = "bind",
+    [SOCKTRACE_SYSCALL_LISTEN] = "listen",
+    [SOCKTRACE_SYSCALL_CONNECT] = "connect",
+    [SOCKTRACE_SYSCALL_ACCEPT] = "accept",
+    [SOCKTRACE_SYSCALL_ACCEPT4] = "accept4",
+    [SOCKTRACE_SYSCALL_RECVFROM] = "recvfrom",
+    [SOCKTRACE_SYSCALL_RECVMSG] = "recvmsg",
+    [SOCKTRACE_SYSCALL_RECVMMSG] = "recvmmsg",
+    [SOCKTRACE_SYSCALL_SENDTO] = "sendto",
+    [SOCKTRACE_SYSCALL_SENDMSG] = "sendmsg",
+    [SOCKTRACE_SYSCALL_SENDMMSG] = "sendmmsg",
+    [SOCKTRACE_SYSCALL_SETSOCKOPT] = "setsockopt",
+    [SOCKTRACE_SYSCALL_GETSOCKOPT] = "getsockopt",
+    [SOCKTRACE_SYSCALL_GETPEERNAME] = "getpeername",
+    [SOCKTRACE_SYSCALL_GETSOCKNAME] = "getsockname",
+    [SOCKTRACE_SYSCALL_SHUTDOWN] = "shutdown",
+    [SOCKTRACE_SYSCALL_READ] = "read",
+    [SOCKTRACE_SYSCALL_READV] = "readv",
+    [SOCKTRACE_SYSCALL_WRITE] = "write",
+    [SOCKTRACE_SYSCALL_WRITEV] = "writev",
+    [SOCKTRACE_SYSCALL_CLOSE] = "close",
+    [SOCKTRACE_SYSCALL_POLL] = "poll",
+    [SOCKTRACE_SYSCALL_PPOLL] = "ppoll",
+    [SOCKTRACE_SYSCALL_SELECT] = "select",
+    [SOCKTRACE_SYSCALL_PSELECT] = "pselect",
+    [SOCKTRACE_SYSCALL_EPOLL_CREATE] = "epoll_create",
+    [SOCKTRACE_SYSCALL_EPOLL_CREATE1] = "epoll_create1",
+    [SOCKTRACE_SYSCALL_EPOLL_CTL] = "epoll_ctl",
+    [SOCKTRACE_SYSCALL_EPOLL_WAIT] = "epoll_wait",
+    [SOCKTRACE_SYSCALL_EPOLL_PWAIT] = "epoll_pwait",
+    [SOCKTRACE_SYSCALL_EPOLL_PWAIT2] = "epoll_pwait2",
 };
 
-static inline const char* syscallstr(sockstats_syscall_t syscall)
-{
-    if (syscall < SOCKSTATS_SYSCALL_MAX)
-        return syscall_strings[syscall];
-    return NULL;
-}
+typedef struct {
+    struct pollfd* fds;
+    int nbfds;
+    socktrace_syscall_t syscall;
+} poll_context_t;
 
-struct syscalls {
-    __u32 counters[SOCKSTATS_SYSCALL_MAX];
-};
+typedef struct {
+    __u32 nbfds;
+    fd_set* reads;
+    fd_set* writes;
+    fd_set* excepts;
+    socktrace_syscall_t syscall;
+} select_context_t;
+
+#define SOCKTRACE_CLOSED_RD (1 << 0)
+#define SOCKTRACE_CLOSED_WR (1 << 1)
+#define SOCKTRACE_CLOSED_RDWR (SOCKTRACE_CLOSED_RD | SOCKTRACE_CLOSED_WR)
+
+typedef struct {
+    __u64 inode;
+    int how_closed;
+} sock_ctx_t;
+
+typedef struct {
+    __u64 sock_cookie; /* global socket identifier */
+    __u64 parent_cookie; /* accept()/epoll(): cookie of the listening socket, else 0 */
+    __u64 ts_ns;
+    __u32 pid;
+    __u32 tgid;
+    socktrace_syscall_t op;
+    __u32 fd;
+} sock_event_t;
+
+#define caller_check()                              \
+    do {                                            \
+        __u64 pidtgid = bpf_get_current_pid_tgid(); \
+        __u32 tgid = pidtgid >> 32;                 \
+        if (tgid != target_pid)                     \
+            return 0;                               \
+    } while (0)
 
 #endif
