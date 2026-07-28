@@ -6,24 +6,22 @@ This tool answers the question: how many times has socket syscalls been called b
 ## To do
 
 - [ ] Use TUI to print output
+- [ ] relate to parent file descriptors (e.g. from accept and epoll)
+- [ ] Do we need to support dup, dup2, dup3? or other file operations?
 
 ## Usage
 
 ```bash
-Usage:
 Usage: ./socktrace [options] program args..
-  -d duration
-        Run duration.
+  -f    Out Events to a CSV file.
   -h    Prints this help text.
-  -s duration
-        Set sampling period
 ```
 
 ## Build
 
 ```bash
 # install dependencies
-apt install clang llvm libelf-dev build-essential linux-tools-common linux-tools-generic linux-headers-$(uname -r) linux-tools-$(uname -r)-generic libbpf-dev golang
+apt install clang llvm libelf-dev build-essential linux-tools-common linux-tools-generic linux-headers-$(uname -r) linux-tools-$(uname -r) libbpf-dev golang
 git clone https://github.com/jalalmostafa/socktrace.git
 cd socktrace
 make

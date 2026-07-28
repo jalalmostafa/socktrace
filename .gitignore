@@ -64,3 +64,4 @@ src/sockstats
 *.log
 src/socktrace
 socktraceebpf_bpfe*
+*.csv
