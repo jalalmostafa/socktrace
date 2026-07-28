@@ -1,4 +1,4 @@
-#include "sockstats.bpf.h"
+#include "socktrace.bpf.h"
 
 #define S_IFMT 00170000
 #define S_IFSOCK 0140000
