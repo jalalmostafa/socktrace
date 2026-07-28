@@ -380,7 +380,6 @@ func main() {
 
 	var logger *SocktraceEventLog = nil
 	if args.file {
-		fmt.Println("file is added")
 		logger, err = CreateEventLoggerWithHeaders(pid)
 		if err != nil {
 			log.Fatalln(err.Error())
