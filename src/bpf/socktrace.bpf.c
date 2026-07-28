@@ -125,12 +125,12 @@ static long tp_epoll_cb(__u32 index, epoll_waitx_context_t* ctx)
 static int tp_process_epoll_waitx(socktrace_syscall_t syscall, struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    int count = (int)ctx->args[0];
-    int epfd = (int)ctx->args[1];
+    int epfd = (int)ctx->args[0];
     epoll_waitx_context_t ectx = {
-        .events = (struct epoll_event*)ctx->args[2],
+        .events = (struct epoll_event*)ctx->args[1],
         .syscall = syscall
     };
+    int count = (int)ctx->args[2];
 
     int ret = bpf_loop(count, tp_epoll_cb, &ectx, 0);
     if (ret < 0) {
