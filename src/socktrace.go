@@ -220,22 +220,25 @@ func (tracer *SockTracer) AttachMonitor(pid uint32) error {
 
 	log.Printf("Address of eventpoll_fops is %x", epoll_fops_ptr)
 
+	fmt.Println("loading objects")
 	err = LoadSocktraceEbpfObjects(&tracer.Objs, nil)
 	if err != nil {
-		return nil
+		return err
 	}
+	fmt.Println("after loading objects")
 
 	err = tracer.Objs.TargetPid.Set(pid)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	err = tracer.Objs.EventpollFopsPtr.Set(epoll_fops_ptr)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	tracer_programs := reflect.ValueOf(tracer.Objs.SocktraceEbpfPrograms)
+	fmt.Println("attaching programs")
 	for idx := range tracer_programs.NumField() {
 		prog, ok := tracer_programs.Field(idx).Interface().(*ebpf.Program)
 		if !ok {
@@ -270,7 +273,7 @@ func (tracer *SockTracer) AttachMonitor(pid uint32) error {
 
 		tracer.Links = append(tracer.Links, lnk)
 	}
-
+	fmt.Println("event reader")
 	tracer.EventReader, err = ringbuf.NewReader(tracer.Objs.Events)
 	if err != nil {
 		return err

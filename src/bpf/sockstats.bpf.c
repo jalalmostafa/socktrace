@@ -71,9 +71,8 @@ static inline unsigned int FD_ISSET(int fd, fd_set* set)
 
     if (idx >= 0 && idx < 16) {
         unsigned long slot;
-        // FIXME: maybe we can generalize this again
         if (bpf_probe_read_user(&slot, sizeof(slot), set->fds_bits + idx) < 0) {
-            bpf_printk("bpf_probe_read_user error reading 'fd_set' from user space.");
+            bpf_printk("bpf_probe_read_user: error reading 'fd_set' from user space.");
             return 0;
         }
 
@@ -113,14 +112,42 @@ static int tp_process_fd(socktrace_syscall_t syscall, __u32 fd)
     return 0;
 }
 
+static long tp_epoll_cb(__u32 index, epoll_waitx_context_t* ctx)
+{
+    struct epoll_event ev;
+    if (bpf_probe_read_user(&ev, sizeof(struct epoll_event), ctx->events + index) < 0) {
+        bpf_printk("bpf_probe_read_user: error reading 'events' from user space");
+        return 0;
+    }
+    return tp_process_fd(ctx->syscall, (__u32)ev.data);
+}
+
+static int tp_process_epoll_waitx(socktrace_syscall_t syscall, struct trace_event_raw_sys_enter* ctx)
+{
+    caller_check();
+    int count = (int)ctx->args[0];
+    int epfd = (int)ctx->args[1];
+    epoll_waitx_context_t ectx = {
+        .events = (struct epoll_event*)ctx->args[2],
+        .syscall = syscall
+    };
+
+    int ret = bpf_loop(count, tp_epoll_cb, &ectx, 0);
+    if (ret < 0) {
+        bpf_printk("tp_process_epoll_waitx: bpf_loop failed and returned %d", ret);
+        return 0;
+    }
+
+    return tp_process_fd(syscall, epfd);
+}
+
 static long tp_poll_cb(__u32 index, poll_context_t* ctx)
 {
     struct pollfd pfd;
     if (bpf_probe_read_user(&pfd, sizeof(struct pollfd), ctx->fds + index) < 0) {
-        bpf_printk("bpf_probe_read_user error reading 'pollfds' from user space");
+        bpf_printk("bpf_probe_read_user: error reading 'pollfds' from user space");
         return 0;
     }
-
     return tp_process_fd(ctx->syscall, pfd.fd);
 }
 
@@ -186,134 +213,134 @@ SEC("tracepoint/syscalls/sys_exit_socket")
 int tracepoint__syscalls__sys_exit_socket(struct trace_event_raw_sys_exit* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_SOCKET, RET(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_SOCKET, (__u32)ctx->ret);
 }
 
 SEC("tracepoint/syscalls/sys_enter_bind")
 int tracepoint__syscalls__sys_enter_bind(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_BIND, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_BIND, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_listen")
 int tracepoint__syscalls__sys_enter_listen(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_LISTEN, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_LISTEN, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_accept")
 int tracepoint__syscalls__sys_enter_accept(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_ACCEPT, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_ACCEPT, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_accept4")
 int tracepoint__syscalls__sys_enter_accept4(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_ACCEPT4, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_ACCEPT4, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_exit_accept")
 int tracepoint__syscalls__sys_exit_accept(struct trace_event_raw_sys_exit* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_ACCEPT, RET(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_ACCEPT, (__u32)ctx->ret);
 }
 
 SEC("tracepoint/syscalls/sys_exit_accept")
 int tracepoint__syscalls__sys_exit_accept4(struct trace_event_raw_sys_exit* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_ACCEPT4, RET(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_ACCEPT4, (__u32)ctx->ret);
 }
 
 SEC("tracepoint/syscalls/sys_enter_recvfrom")
 int tracepoint__syscalls__sys_enter_recvfrom(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_RECVFROM, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_RECVFROM, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_recvmsg")
 int tracepoint__syscalls__sys_enter_recvmsg(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_RECVMSG, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_RECVMSG, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_recvmmsg")
 int tracepoint__syscalls__sys_enter_recvmmsg(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_RECVMMSG, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_RECVMMSG, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_sendto")
 int tracepoint__syscalls__sys_enter_sendto(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_SENDTO, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_SENDTO, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_sendmsg")
 int tracepoint__syscalls__sys_enter_sendmsg(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_SENDMSG, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_SENDMSG, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_sendmmsg")
 int tracepoint__syscalls__sys_enter_sendmmsg(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_SENDMMSG, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_SENDMMSG, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_getsockopt")
 int tracepoint__syscalls__sys_enter_getsockopt(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_GETSOCKOPT, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_GETSOCKOPT, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_setsockopt")
 int tracepoint__syscalls__sys_enter_setsockopt(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_SETSOCKOPT, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_SETSOCKOPT, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_getpeername")
 int tracepoint__syscalls__sys_enter_getpeername(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_GETPEERNAME, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_GETPEERNAME, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_getsockname")
 int tracepoint__syscalls__sys_enter_getsockname(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_GETSOCKNAME, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_GETSOCKNAME, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_connect")
 int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_CONNECT, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_CONNECT, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_shutdown")
 int tracepoint__syscalls__sys_enter_shutdown(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    int fd = FD(ctx);
-    int how = ARG(ctx, 1);
+    int fd = (__u32)ctx->args[0];
+    int how = (__u32)ctx->args[1];
     int ret = tp_process_fd(SOCKTRACE_SYSCALL_SHUTDOWN, fd);
     socket_delete(fd, how);
     return ret;
@@ -323,35 +350,35 @@ SEC("tracepoint/syscalls/sys_enter_read")
 int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_READ, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_READ, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_readv")
 int tracepoint__syscalls__sys_enter_readv(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_READV, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_READV, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_write")
 int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_WRITE, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_WRITE, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_writev")
 int tracepoint__syscalls__sys_enter_writev(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_WRITEV, FD(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_WRITEV, (__u32)ctx->args[0]);
 }
 
 SEC("tracepoint/syscalls/sys_enter_close")
 int tracepoint__syscalls__sys_enter_close(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    __u32 fd = FD(ctx);
+    __u32 fd = (__u32)ctx->args[0];
     int ret = tp_process_fd(SOCKTRACE_SYSCALL_CLOSE, fd);
     socket_delete(fd, SHUT_RDWR);
     return ret;
@@ -361,8 +388,8 @@ SEC("tracepoint/syscalls/sys_enter_poll")
 int tracepoint__syscalls__sys_enter_poll(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    struct pollfd* fds = (struct pollfd*)((void*)ARG(ctx, 0));
-    __u32 nfds = ARG(ctx, 1);
+    struct pollfd* fds = (struct pollfd*)ctx->args[0];
+    __u32 nfds = (__u32)ctx->args[1];
     return tp_poll_process(SOCKTRACE_SYSCALL_POLL, fds, nfds);
 }
 
@@ -370,8 +397,8 @@ SEC("tracepoint/syscalls/sys_enter_ppoll")
 int tracepoint__syscalls__sys_enter_ppoll(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    struct pollfd* fds = (struct pollfd*)((void*)ARG(ctx, 0));
-    __u32 nfds = ARG(ctx, 1);
+    struct pollfd* fds = (struct pollfd*)ctx->args[0];
+    __u32 nfds = (__u32)ctx->args[1];
     return tp_poll_process(SOCKTRACE_SYSCALL_PPOLL, fds, nfds);
 }
 
@@ -379,10 +406,10 @@ SEC("tracepoint/syscalls/sys_enter_select")
 int tracepoint__syscalls__sys_enter_select(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    __u32 nbfds = ARG(ctx, 0);
-    fd_set* reads = (fd_set*)((void*)ARG(ctx, 1));
-    fd_set* writes = (fd_set*)((void*)ARG(ctx, 2));
-    fd_set* excepts = (fd_set*)((void*)ARG(ctx, 3));
+    __u32 nbfds = (__u32)ctx->args[0];
+    fd_set* reads = (fd_set*)ctx->args[1];
+    fd_set* writes = (fd_set*)ctx->args[2];
+    fd_set* excepts = (fd_set*)ctx->args[3];
 
     return tp_select_process(SOCKTRACE_SYSCALL_SELECT, nbfds, reads, writes, excepts);
 }
@@ -391,10 +418,10 @@ SEC("tracepoint/syscalls/sys_enter_pselect6")
 int tracepoint__syscalls__sys_enter_pselect6(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    __u32 nbfds = ARG(ctx, 0);
-    fd_set* reads = (fd_set*)((void*)ARG(ctx, 1));
-    fd_set* writes = (fd_set*)((void*)ARG(ctx, 2));
-    fd_set* excepts = (fd_set*)((void*)ARG(ctx, 3));
+    __u32 nbfds = (__u32)ctx->args[0];
+    fd_set* reads = (fd_set*)ctx->args[1];
+    fd_set* writes = (fd_set*)ctx->args[2];
+    fd_set* excepts = (fd_set*)ctx->args[3];
     return tp_select_process(SOCKTRACE_SYSCALL_PSELECT, nbfds, reads, writes, excepts);
 }
 
@@ -402,42 +429,39 @@ SEC("tracepoint/syscalls/sys_exit_epoll_create")
 int tracepoint__syscalls__sys_exit_epoll_create(struct trace_event_raw_sys_exit* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_EPOLL_CREATE, RET(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_EPOLL_CREATE, (__u32)ctx->ret);
 }
 
 SEC("tracepoint/syscalls/sys_exit_epoll_create1")
 int tracepoint__syscalls__sys_exit_epoll_create1(struct trace_event_raw_sys_exit* ctx)
 {
     caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_EPOLL_CREATE1, RET(ctx));
+    return tp_process_fd(SOCKTRACE_SYSCALL_EPOLL_CREATE1, (__u32)ctx->ret);
 }
 
-SEC("tracepoint/syscalls/sys_exit_epoll_ctl")
-int tracepoint__syscalls__sys_exit_epoll_ctl(struct trace_event_raw_sys_enter* ctx)
+SEC("tracepoint/syscalls/sys_enter_epoll_ctl")
+int tracepoint__syscalls__sys_enter_epoll_ctl(struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
-    int epfd = FD(ctx);
-    int sockfd = ARG(ctx, 2);
+    int epfd = (__u32)ctx->args[0];
+    int sockfd =(__u32)ctx->args[2];
     return tp_process_fd(SOCKTRACE_SYSCALL_EPOLL_CTL, epfd) && tp_process_fd(SOCKTRACE_SYSCALL_EPOLL_CTL, sockfd);
 }
 
-SEC("tracepoint/syscalls/sys_exit_epoll_wait")
-int tracepoint__syscalls__sys_exit_epoll_wait(struct trace_event_raw_sys_enter* ctx)
+SEC("tracepoint/syscalls/sys_enter_epoll_wait")
+int tracepoint__syscalls__sys_enter_epoll_wait(struct trace_event_raw_sys_enter* ctx)
 {
-    caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_EPOLL_WAIT, FD(ctx));
+    return tp_process_epoll_waitx(SOCKTRACE_SYSCALL_EPOLL_WAIT, ctx);
 }
 
-SEC("tracepoint/syscalls/sys_exit_epoll_pwait")
-int tracepoint__syscalls__sys_exit_epoll_pwait(struct trace_event_raw_sys_enter* ctx)
+SEC("tracepoint/syscalls/sys_enter_epoll_pwait")
+int tracepoint__syscalls__sys_enter_epoll_pwait(struct trace_event_raw_sys_enter* ctx)
 {
-    caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_EPOLL_PWAIT, FD(ctx));
+    return tp_process_epoll_waitx(SOCKTRACE_SYSCALL_EPOLL_PWAIT, ctx);
 }
 
-SEC("tracepoint/syscalls/sys_exit_epoll_pwait2")
-int tracepoint__syscalls__sys_exit_epoll_pwait2(struct trace_event_raw_sys_enter* ctx)
+SEC("tracepoint/syscalls/sys_enter_epoll_pwait2")
+int tracepoint__syscalls__sys_enter_epoll_pwait2(struct trace_event_raw_sys_enter* ctx)
 {
-    caller_check();
-    return tp_process_fd(SOCKTRACE_SYSCALL_EPOLL_PWAIT2, FD(ctx));
+    return tp_process_epoll_waitx(SOCKTRACE_SYSCALL_EPOLL_PWAIT2, ctx);
 }

@@ -10,7 +10,7 @@
             "request": "launch",
             "mode": "debug",
             "program": "src/",
-            "args": ["-s", "1s", "telnet", "1.1.1.1", "80"],
+            "args": ["telnet", "1.1.1.1", "80"],
             "asRoot": true,
             "console": "integratedTerminal"
         }

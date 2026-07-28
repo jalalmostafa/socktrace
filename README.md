@@ -7,7 +7,7 @@ This tool answers the question: how many times has socket syscalls been called b
 
 - [ ] Use TUI to print output
 - [ ] relate to parent file descriptors (e.g. from accept and epoll)
-- [ ] Do we need to support dup, dup2, dup3? or other file operations?
+- [ ] Do we need to support dup, dup2, dup3? ioctl? or other file operations?
 
 ## Usage
 

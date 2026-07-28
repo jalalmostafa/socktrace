@@ -14,10 +14,6 @@
 #define MAX_PROCESSES 256
 #define MAX_SOCKETS SOCKTRACE_NFDBITS
 
-#define ARG(ctx, index) BPF_CORE_READ((ctx), args[index])
-#define FD(ctx) ARG(ctx, 0)
-#define RET(ctx) BPF_CORE_READ((ctx), ret)
-
 enum socktrace_syscall {
     SOCKTRACE_SYSCALL_SOCKET,
     SOCKTRACE_SYSCALL_BIND,
@@ -104,6 +100,11 @@ typedef struct {
     fd_set* excepts;
     socktrace_syscall_t syscall;
 } select_context_t;
+
+typedef struct {
+    struct epoll_event* events;
+    socktrace_syscall_t syscall;
+} epoll_waitx_context_t;
 
 #define SOCKTRACE_CLOSED_RD (1 << 0)
 #define SOCKTRACE_CLOSED_WR (1 << 1)
