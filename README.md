@@ -7,13 +7,14 @@ This tool answers the question: how many times has socket syscalls been called b
 
 - [ ] Use TUI to print output
 - [ ] relate to parent file descriptors (e.g. from accept and epoll)
-- [ ] Do we need to support dup, dup2, dup3? ioctl? or other file operations?
+- [ ] Do we need to support socketpair?
+- [ ] Support forked processes using sched_process_fork
 
 ## Usage
 
 ```bash
 Usage: ./socktrace [options] program args..
-  -f    Out Events to a CSV file.
+  -f    Output Events to a CSV file.
   -h    Prints this help text.
 ```
 

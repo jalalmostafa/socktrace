@@ -25,18 +25,49 @@ struct {
     __type(value, sock_ctx_t);
 } reg_sockets SEC(".maps");
 
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_SOCKETS);
-    __type(key, __u64); // Child TGID & Sock FD
-    __type(value, __u64); // Parent TGID & Sock FD
-} parented_sockets SEC(".maps");
-
 static inline const char* syscallstr(socktrace_syscall_t syscall)
 {
     if (syscall < SOCKTRACE_SYSCALL_MAX)
         return syscall_strings[syscall];
     return NULL;
+}
+
+static int socket_add(__u32 fd, __u64 inode)
+{
+    __u64 tgid_fd = (bpf_get_current_pid_tgid() & 0xFFFFFFFF00000000) | fd;
+
+    sock_ctx_t sock_ctx = {
+        .how_closed = 0,
+        .inode = inode
+    };
+
+    int ret = bpf_map_update_elem(&reg_sockets, &tgid_fd, &sock_ctx, BPF_ANY);
+    if (ret < 0)
+        bpf_printk("SOCKSTATS: Failed to add file descriptor: tgid=%u, fd=%u, inode=%llu", (__u32)(tgid_fd >> 32), (__u32)(tgid_fd & 0xFFFFFFFF), inode);
+    return ret;
+}
+
+static __u64 socket_delete(__u32 fd, int how_closed)
+{
+    __u64 pidtgid = bpf_get_current_pid_tgid();
+    __u64 tgidfd = (pidtgid & 0xFFFFFFFF00000000) | fd;
+
+    sock_ctx_t* sock = bpf_map_lookup_elem(&reg_sockets, &tgidfd);
+    if (!sock)
+        return 0;
+
+    __u64 inode = sock->inode;
+    if (how_closed == SHUT_RDWR || how_closed == SHUT_RD)
+        sock->how_closed |= SOCKTRACE_CLOSED_RD;
+    if (how_closed == SHUT_RDWR || how_closed == SHUT_WR)
+        sock->how_closed |= SOCKTRACE_CLOSED_WR;
+
+    if (sock->how_closed == SOCKTRACE_CLOSED_RDWR) {
+        if (bpf_map_delete_elem(&reg_sockets, &tgidfd) < 0)
+            bpf_printk("Removing Socket TGID=%llu FD=%lu Failed", tgidfd >> 32, fd);
+    }
+
+    return inode;
 }
 
 SEC("fentry/fd_install")
@@ -48,17 +79,8 @@ int BPF_PROG(trace_fd_install, unsigned int fd, struct file* file)
     if ((mode & S_IFMT) != S_IFSOCK && fops != eventpoll_fops_ptr)
         return 0;
 
-    __u64 tgid_fd = (bpf_get_current_pid_tgid() & 0xFFFFFFFF00000000) | fd;
     __u64 inode = BPF_CORE_READ(file, f_inode, i_ino);
-
-    sock_ctx_t sock_ctx = {
-        .how_closed = 0,
-        .inode = inode
-    };
-
-    if (bpf_map_update_elem(&reg_sockets, &tgid_fd, &sock_ctx, BPF_ANY) < 0)
-        bpf_printk("SOCKSTATS: Failed to add file descriptor: tgid=%u, fd=%u, inode=%llu", (__u32)(tgid_fd >> 32), (__u32)(tgid_fd & 0xFFFFFFFF), inode);
-
+    socket_add(fd, inode);
     return 0;
 }
 
@@ -84,16 +106,13 @@ static inline unsigned int FD_ISSET(int fd, fd_set* set)
 
 static int tp_process_fd(socktrace_syscall_t syscall, __u32 fd)
 {
-    if (fd == 0 || fd == 1 || fd == 2)
-        return 0;
-
     __u64 tgidpid = bpf_get_current_pid_tgid();
     __u64 tgid = tgidpid >> 32;
     __u32 pid = tgidpid & 0xFFFFFFFF;
     __u64 tgid_fd = (tgid << 32) | fd;
-    __u64* inode = (__u64*)bpf_map_lookup_elem(&reg_sockets, &tgid_fd);
+    sock_ctx_t* ctx = (sock_ctx_t*)bpf_map_lookup_elem(&reg_sockets, &tgid_fd);
 
-    if (inode == NULL)
+    if (ctx == NULL)
         return 0;
 
     sock_event_t* ev = bpf_ringbuf_reserve(&events, sizeof(sock_event_t), 0);
@@ -105,7 +124,7 @@ static int tp_process_fd(socktrace_syscall_t syscall, __u32 fd)
     ev->tgid = tgid & 0xFFFFFFFF;
     ev->pid = pid;
     ev->ts_ns = bpf_ktime_get_ns();
-    ev->sock_cookie = tgid_fd;
+    ev->sock_cookie = ctx->inode;
     ev->parent_cookie = 0;
 
     bpf_ringbuf_submit(ev, 0);
@@ -122,7 +141,7 @@ static long tp_epoll_cb(__u32 index, epoll_waitx_context_t* ctx)
     return tp_process_fd(ctx->syscall, (__u32)ev.data);
 }
 
-static int tp_process_epoll_waitx(socktrace_syscall_t syscall, struct trace_event_raw_sys_enter* ctx)
+static int checked_tp_process_epoll_waitx(socktrace_syscall_t syscall, struct trace_event_raw_sys_enter* ctx)
 {
     caller_check();
     int epfd = (int)ctx->args[0];
@@ -134,7 +153,7 @@ static int tp_process_epoll_waitx(socktrace_syscall_t syscall, struct trace_even
 
     int ret = bpf_loop(count, tp_epoll_cb, &ectx, 0);
     if (ret < 0) {
-        bpf_printk("tp_process_epoll_waitx: bpf_loop failed and returned %d", ret);
+        bpf_printk("checked_tp_process_epoll_waitx: bpf_loop failed and returned %d", ret);
         return 0;
     }
 
@@ -189,24 +208,18 @@ static int tp_select_process(socktrace_syscall_t syscall, __u32 nbfds, fd_set* r
     return 0;
 }
 
-static void socket_delete(__u32 fd, int how_closed)
+static int checked_tp_process_dupx(socktrace_syscall_t syscall, struct trace_event_raw_sys_enter* ctx)
 {
-    __u64 pidtgid = bpf_get_current_pid_tgid();
-    __u64 tgidfd = (pidtgid & 0xFFFFFFFF00000000) | fd;
+    caller_check();
+    __u32 oldfd = (__u32)ctx->args[0];
+    __u32 newfd = (__u32)ctx->args[1];
+    int ret1 = tp_process_fd(SOCKTRACE_SYSCALL_DUP2, oldfd);
+    __u64 inode = socket_delete(oldfd, SHUT_RDWR);
+    if (inode)
+        socket_add(newfd, inode);
+    int ret2 = tp_process_fd(SOCKTRACE_SYSCALL_DUP2, newfd);
 
-    sock_ctx_t* sock = bpf_map_lookup_elem(&reg_sockets, &tgidfd);
-    if (!sock)
-        return;
-
-    if (how_closed == SHUT_RDWR || how_closed == SHUT_RD)
-        sock->how_closed |= SOCKTRACE_CLOSED_RD;
-    if (how_closed == SHUT_RDWR || how_closed == SHUT_WR)
-        sock->how_closed |= SOCKTRACE_CLOSED_WR;
-
-    if (sock->how_closed == SOCKTRACE_CLOSED_RDWR) {
-        if (bpf_map_delete_elem(&reg_sockets, &tgidfd) < 0)
-            bpf_printk("Removing Socket TGID=%llu FD=%lu Failed", tgidfd >> 32, fd);
-    }
+    return ret1 || ret2;
 }
 
 SEC("tracepoint/syscalls/sys_exit_socket")
@@ -444,24 +457,95 @@ int tracepoint__syscalls__sys_enter_epoll_ctl(struct trace_event_raw_sys_enter* 
 {
     caller_check();
     int epfd = (__u32)ctx->args[0];
-    int sockfd =(__u32)ctx->args[2];
-    return tp_process_fd(SOCKTRACE_SYSCALL_EPOLL_CTL, epfd) && tp_process_fd(SOCKTRACE_SYSCALL_EPOLL_CTL, sockfd);
+    int sockfd = (__u32)ctx->args[2];
+    return tp_process_fd(SOCKTRACE_SYSCALL_EPOLL_CTL, epfd) || tp_process_fd(SOCKTRACE_SYSCALL_EPOLL_CTL, sockfd);
 }
 
 SEC("tracepoint/syscalls/sys_enter_epoll_wait")
 int tracepoint__syscalls__sys_enter_epoll_wait(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_epoll_waitx(SOCKTRACE_SYSCALL_EPOLL_WAIT, ctx);
+    return checked_tp_process_epoll_waitx(SOCKTRACE_SYSCALL_EPOLL_WAIT, ctx);
 }
 
 SEC("tracepoint/syscalls/sys_enter_epoll_pwait")
 int tracepoint__syscalls__sys_enter_epoll_pwait(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_epoll_waitx(SOCKTRACE_SYSCALL_EPOLL_PWAIT, ctx);
+    return checked_tp_process_epoll_waitx(SOCKTRACE_SYSCALL_EPOLL_PWAIT, ctx);
 }
 
 SEC("tracepoint/syscalls/sys_enter_epoll_pwait2")
 int tracepoint__syscalls__sys_enter_epoll_pwait2(struct trace_event_raw_sys_enter* ctx)
 {
-    return tp_process_epoll_waitx(SOCKTRACE_SYSCALL_EPOLL_PWAIT2, ctx);
+    return checked_tp_process_epoll_waitx(SOCKTRACE_SYSCALL_EPOLL_PWAIT2, ctx);
+}
+
+SEC("tracepoint/syscalls/sys_enter_sendfile64")
+int tracepoint__syscalls__sys_enter_sendfile64(struct trace_event_raw_sys_enter* ctx)
+{
+    caller_check();
+    __u32 fd_out = (__u32)ctx->args[0];
+    __u32 fd_in = (__u32)ctx->args[1];
+    return tp_process_fd(SOCKTRACE_SYSCALL_SENDFILE64, fd_out) || tp_process_fd(SOCKTRACE_SYSCALL_SENDFILE64, fd_in);
+}
+
+SEC("tracepoint/syscalls/sys_enter_ioctl")
+int tracepoint__syscalls__sys_enter_ioctl(struct trace_event_raw_sys_enter* ctx)
+{
+    caller_check();
+    __u32 fd = (__u32)ctx->args[0];
+    return tp_process_fd(SOCKTRACE_SYSCALL_IOCTL, fd);
+}
+
+SEC("tracepoint/syscalls/sys_enter_fcntl")
+int tracepoint__syscalls__sys_enter_fcntl(struct trace_event_raw_sys_enter* ctx)
+{
+    caller_check();
+    __u32 fd = (__u32)ctx->args[0];
+    return tp_process_fd(SOCKTRACE_SYSCALL_FCNTL, fd);
+}
+
+SEC("tracepoint/syscalls/sys_enter_splice")
+int tracepoint__syscalls__sys_enter_splice(struct trace_event_raw_sys_enter* ctx)
+{
+    caller_check();
+    __u32 fd_in = (__u32)ctx->args[0];
+    __u32 fd_out = (__u32)ctx->args[2];
+    return tp_process_fd(SOCKTRACE_SYSCALL_SPLICE, fd_in) || tp_process_fd(SOCKTRACE_SYSCALL_SPLICE, fd_out);
+}
+
+SEC("tracepoint/syscalls/sys_enter_tee")
+int tracepoint__syscalls__sys_enter_tee(struct trace_event_raw_sys_enter* ctx)
+{
+    caller_check();
+    __u32 fd_in = (__u32)ctx->args[0];
+    __u32 fd_out = (__u32)ctx->args[1];
+    return tp_process_fd(SOCKTRACE_SYSCALL_TEE, fd_in) || tp_process_fd(SOCKTRACE_SYSCALL_TEE, fd_out);
+}
+
+SEC("tracepoint/syscalls/sys_enter_dup")
+int tracepoint__syscalls__sys_enter_dup(struct trace_event_raw_sys_enter* ctx)
+{
+    caller_check();
+    __u32 fd = (__u32)ctx->args[0];
+    return tp_process_fd(SOCKTRACE_SYSCALL_DUP, fd);
+}
+
+SEC("tracepoint/syscalls/sys_exit_dup")
+int tracepoint__syscalls__sys_exit_dup(struct trace_event_raw_sys_exit* ctx)
+{
+    caller_check();
+    __u32 fd = (__u32)ctx->ret;
+    return tp_process_fd(SOCKTRACE_SYSCALL_DUP, fd);
+}
+
+SEC("tracepoint/syscalls/sys_enter_dup2")
+int tracepoint__syscalls__sys_enter_dup2(struct trace_event_raw_sys_enter* ctx)
+{
+    return checked_tp_process_dupx(SOCKTRACE_SYSCALL_DUP2, ctx);
+}
+
+SEC("tracepoint/syscalls/sys_enter_dup3")
+int tracepoint__syscalls__sys_enter_dup3(struct trace_event_raw_sys_enter* ctx)
+{
+    return checked_tp_process_dupx(SOCKTRACE_SYSCALL_DUP3, ctx);
 }
