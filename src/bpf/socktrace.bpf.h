@@ -55,6 +55,7 @@ enum socktrace_syscall {
     SOCKTRACE_SYSCALL_DUP,
     SOCKTRACE_SYSCALL_DUP2,
     SOCKTRACE_SYSCALL_DUP3,
+    SOCKTRACE_SYSCALL_SOCKETPAIR,
     SOCKTRACE_SYSCALL_MAX
 };
 
@@ -100,6 +101,7 @@ const char* syscall_strings[] = {
     [SOCKTRACE_SYSCALL_DUP] = "dup",
     [SOCKTRACE_SYSCALL_DUP2] = "dup2",
     [SOCKTRACE_SYSCALL_DUP3] = "dup3",
+    [SOCKTRACE_SYSCALL_SOCKETPAIR] = "socketpair",
 };
 
 typedef struct {

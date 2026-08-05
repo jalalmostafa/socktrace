@@ -25,6 +25,13 @@ struct {
     __type(value, sock_ctx_t);
 } reg_sockets SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_SOCKETS);
+    __type(key, __u64); // PIDTGID
+    __type(value, void*); // pointer to FDs
+} socketpair_registry SEC(".maps");
+
 static inline const char* syscallstr(socktrace_syscall_t syscall)
 {
     if (syscall < SOCKTRACE_SYSCALL_MAX)
@@ -548,4 +555,41 @@ SEC("tracepoint/syscalls/sys_enter_dup3")
 int tracepoint__syscalls__sys_enter_dup3(struct trace_event_raw_sys_enter* ctx)
 {
     return checked_tp_process_dupx(SOCKTRACE_SYSCALL_DUP3, ctx);
+}
+
+SEC("tracepoint/syscalls/sys_enter_socketpair")
+int tracepoint__syscalls__sys_enter_socketpair(struct trace_event_raw_sys_enter* ctx)
+{
+    caller_check();
+
+    void* sv = (void*)ctx->args[3];
+    __u64 pidtgid = bpf_get_current_pid_tgid();
+
+    if (bpf_map_update_elem(&socketpair_registry, &pidtgid, &sv, 0) < 0)
+        bpf_printk("Failed to register socketpair call");
+
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_socketpair")
+int tracepoint__syscalls__sys_exit_socketpair(struct trace_event_raw_sys_exit* ctx)
+{
+    caller_check();
+
+    __u64 pidtgid = bpf_get_current_pid_tgid();
+    void** sv_ptr = bpf_map_lookup_elem(&socketpair_registry, &pidtgid);
+    if (sv_ptr == NULL)
+        return 0;
+
+    int sv[2];
+    if (bpf_probe_read_user(&sv, sizeof(sv), *sv_ptr) < 0)
+        bpf_printk("Failed to read socketpair FDs from user-space");
+
+    for (size_t i = 0; i < 2; i++)
+        tp_process_fd(SOCKTRACE_SYSCALL_SOCKETPAIR, sv[i]);
+
+    if (bpf_map_delete_elem(&socketpair_registry, &pidtgid) < 0)
+        bpf_printk("Failed to unregister socketpair call");
+
+    return 0;
 }
