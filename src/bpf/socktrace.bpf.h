@@ -142,12 +142,12 @@ typedef struct {
     __u32 fd;
 } sock_event_t;
 
-#define caller_check()                              \
-    do {                                            \
-        __u64 pidtgid = bpf_get_current_pid_tgid(); \
-        __u32 tgid = pidtgid >> 32;                 \
-        if (tgid != target_pid)                     \
-            return 0;                               \
+#define caller_check()                                        \
+    do {                                                      \
+        __u64 pidtgid = bpf_get_current_pid_tgid();           \
+        __u32 tgid = pidtgid >> 32;                           \
+        if (bpf_map_lookup_elem(&target_pids, &tgid) == NULL) \
+            return 0;                                         \
     } while (0)
 
 #endif

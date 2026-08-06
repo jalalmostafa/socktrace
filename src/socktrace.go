@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,13 +10,13 @@ import (
 	"os/exec"
 	"os/signal"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
-	"github.com/cilium/ebpf/ringbuf"
 )
 
 const (
@@ -26,6 +24,8 @@ const (
 	MAX_SOCKETS   = 64
 	IPC_PATH      = "/tmp/socktrace.sock"
 )
+
+var CONTROL_PROGRAMS = []string{"trace_kernel_clone", "trace_fd_install"}
 
 type SocktraceArgs struct {
 	help bool
@@ -46,13 +46,12 @@ type SockTracer struct {
 	Objs        SocktraceEbpfObjects
 	Context     context.Context
 	Links       []link.Link
-	Canceller   context.CancelFunc
-	EventsChan  chan SocketEvent
-	EventReader *ringbuf.Reader
+	EventsRing  *RingChannel[SocketEvent]
+	ProcessRing *RingChannel[uint32]
 }
 
 const (
-	SOCKTRACE_SYSCALL_SOCKET int = iota
+	SOCKTRACE_SYSCALL_SOCKET uint32 = iota
 	SOCKTRACE_SYSCALL_BIND
 	SOCKTRACE_SYSCALL_LISTEN
 	SOCKTRACE_SYSCALL_CONNECT
@@ -84,10 +83,18 @@ const (
 	SOCKTRACE_SYSCALL_EPOLL_WAIT
 	SOCKTRACE_SYSCALL_EPOLL_PWAIT
 	SOCKTRACE_SYSCALL_EPOLL_PWAIT2
+	SOCKTRACE_SYSCALL_SENDFILE64
+	SOCKTRACE_SYSCALL_IOCTL
+	SOCKTRACE_SYSCALL_SPLICE
+	SOCKTRACE_SYSCALL_TEE
+	SOCKTRACE_SYSCALL_DUP
+	SOCKTRACE_SYSCALL_DUP2
+	SOCKTRACE_SYSCALL_DUP3
+	SOCKTRACE_SYSCALL_SOCKETPAIR
 	SOCKTRACE_SYSCALL_MAX
 )
 
-var socktrace_syscalls = map[int]string{
+var socktrace_syscalls = map[uint32]string{
 	SOCKTRACE_SYSCALL_SOCKET:        "socket",
 	SOCKTRACE_SYSCALL_BIND:          "bind",
 	SOCKTRACE_SYSCALL_LISTEN:        "listen",
@@ -120,6 +127,14 @@ var socktrace_syscalls = map[int]string{
 	SOCKTRACE_SYSCALL_EPOLL_WAIT:    "epoll_wait",
 	SOCKTRACE_SYSCALL_EPOLL_PWAIT:   "epoll_pwait",
 	SOCKTRACE_SYSCALL_EPOLL_PWAIT2:  "epoll_pwait2",
+	SOCKTRACE_SYSCALL_SENDFILE64:    "sendfile",
+	SOCKTRACE_SYSCALL_IOCTL:         "ioctl",
+	SOCKTRACE_SYSCALL_SPLICE:        "splice",
+	SOCKTRACE_SYSCALL_TEE:           "tee",
+	SOCKTRACE_SYSCALL_DUP:           "dup",
+	SOCKTRACE_SYSCALL_DUP2:          "dup2",
+	SOCKTRACE_SYSCALL_DUP3:          "dup3",
+	SOCKTRACE_SYSCALL_SOCKETPAIR:    "socketpair",
 }
 
 func LaunchProgram(cmd []string) (int, error) {
@@ -177,7 +192,6 @@ func WaitProgram(pid int) (bool, int) {
 
 func TerminateProgram(pid int) error {
 	process, err := os.FindProcess(pid)
-
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -187,6 +201,10 @@ func TerminateProgram(pid int) error {
 	}
 
 	if err = process.Signal(syscall.SIGTERM); err != nil {
+		if errors.Is(err, os.ErrProcessDone) {
+			return nil
+		}
+
 		if err := process.Kill(); err != nil {
 			return err
 		}
@@ -220,14 +238,12 @@ func (tracer *SockTracer) AttachMonitor(pid uint32) error {
 
 	log.Printf("Address of eventpoll_fops is %x", epoll_fops_ptr)
 
-	fmt.Println("loading objects")
 	err = LoadSocktraceEbpfObjects(&tracer.Objs, nil)
 	if err != nil {
 		return err
 	}
-	fmt.Println("after loading objects")
 
-	err = tracer.Objs.TargetPid.Set(pid)
+	err = tracer.Objs.TargetPids.Update(pid, uint32(1), ebpf.UpdateAny)
 	if err != nil {
 		return err
 	}
@@ -238,7 +254,7 @@ func (tracer *SockTracer) AttachMonitor(pid uint32) error {
 	}
 
 	tracer_programs := reflect.ValueOf(tracer.Objs.SocktraceEbpfPrograms)
-	fmt.Println("attaching programs")
+
 	for idx := range tracer_programs.NumField() {
 		prog, ok := tracer_programs.Field(idx).Interface().(*ebpf.Program)
 		if !ok {
@@ -257,7 +273,8 @@ func (tracer *SockTracer) AttachMonitor(pid uint32) error {
 
 		var lnk link.Link
 		prog_name := func_info[0].Func.Name
-		if prog_name == "trace_fd_install" {
+
+		if slices.Contains(CONTROL_PROGRAMS, prog_name) {
 			lnk, err = link.AttachTracing(link.TracingOptions{
 				Program:    prog,
 				AttachType: ebpf.AttachTraceFEntry,
@@ -273,63 +290,29 @@ func (tracer *SockTracer) AttachMonitor(pid uint32) error {
 
 		tracer.Links = append(tracer.Links, lnk)
 	}
-	fmt.Println("event reader")
-	tracer.EventReader, err = ringbuf.NewReader(tracer.Objs.Events)
-	if err != nil {
-		return err
-	}
 
-	tracer.Context, tracer.Canceller = context.WithCancel(context.Background())
-	tracer.EventsChan = make(chan SocketEvent, 100)
+	tracer.EventsRing = new(RingChannel[SocketEvent])
+	tracer.EventsRing.Init(tracer.Objs.Events)
 
-	go func() {
-		for {
-			select {
-			case <-tracer.Context.Done():
-				return
-			default:
-				event, err := tracer.FetchEvent()
-				if err != nil {
-					if errors.Is(err, ringbuf.ErrClosed) {
-						return
-					}
-					continue
-				}
-				select {
-				case tracer.EventsChan <- event:
-				case <-tracer.Context.Done():
-					return
-				}
-			}
-		}
-	}()
+	tracer.ProcessRing = new(RingChannel[uint32])
+	tracer.ProcessRing.Init(tracer.Objs.ProcessEvents)
 
 	log.Println("Loaded eBPF Objects!")
 
 	return nil
 }
 
-func (tracer *SockTracer) FetchEvent() (SocketEvent, error) {
-	var event SocketEvent
-
-	record, err := tracer.EventReader.Read()
-	if err != nil {
-		return event, err
-	}
-
-	err = binary.Read(bytes.NewBuffer(record.RawSample), binary.LittleEndian, &event)
-	if err != nil {
-		return event, err
-	}
-
-	return event, nil
-}
-
 func (tracer *SockTracer) Close() {
-	tracer.EventReader.Close()
-	close(tracer.EventsChan)
-	tracer.Canceller()
+	if tracer.EventsRing != nil {
+		tracer.EventsRing.Close()
+	}
+
+	if tracer.ProcessRing != nil {
+		tracer.ProcessRing.Close()
+	}
+
 	for _, l := range tracer.Links {
+		l.Detach()
 		l.Close()
 	}
 	tracer.Objs.Close()
@@ -395,7 +378,6 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-
 	defer tracer.Close()
 
 	log.Println("Attached eBPF programs!")
@@ -417,15 +399,17 @@ loop:
 		case <-break_flag:
 			fmt.Println("Signal Received!")
 			break loop
-		case event := <-tracer.EventsChan:
+		case event := <-tracer.EventsRing.Channel:
 			if logger != nil {
 				logger.WriteEvent(&event)
 			} else {
 				log.Printf("%d,%d,%d,%d,%d,%s,%d\n",
 					event.Cookie, event.ParentCookie, event.TimestampNs,
-					event.Pid, event.Tgid, socktrace_syscalls[int(event.Operation)],
+					event.Pid, event.Tgid, socktrace_syscalls[event.Operation],
 					event.FileDescriptor)
 			}
+		case pid := <-tracer.ProcessRing.Channel:
+			log.Printf("New Process Addeed: %d\n", pid)
 		default:
 			exited, exit_status := WaitProgram(pid)
 			if exited {

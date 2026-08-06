@@ -2,10 +2,17 @@
 
 #define S_IFMT 00170000
 #define S_IFSOCK 0140000
+#define CLONE_THREAD 0x00010000
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-__u32 target_pid = 0;
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_PROCESSES);
+    __type(key, __u32); // PID
+    __type(value, __u32);
+} target_pids SEC(".maps");
+
 /**
  * @brief Filled from user-space using /proc/kallsyms
  * $ sudo cat /proc/kallsyms | grep eventpoll_fops
@@ -17,6 +24,11 @@ struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, (1 << 20));
 } events SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, (1 << 16));
+} process_events SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -88,6 +100,29 @@ int BPF_PROG(trace_fd_install, unsigned int fd, struct file* file)
 
     __u64 inode = BPF_CORE_READ(file, f_inode, i_ino);
     socket_add(fd, inode);
+    return 0;
+}
+
+SEC("fexit/kernel_clone")
+int BPF_PROG(trace_kernel_clone, struct kernel_clone_args* args, long ret)
+{
+    caller_check();
+    bpf_printk("Catched process %d\n", ret);
+
+    if (ret <= 0 || (args->flags & CLONE_THREAD))
+        return 0;
+
+    __u32 r = 1;
+    if (bpf_map_update_elem(&target_pids, &ret, &r, 0) < 0)
+        bpf_printk("Failed to add new process");
+
+    __u32* buf = bpf_ringbuf_reserve(&process_events, sizeof(__u32), 0);
+    if (buf == NULL) 
+        return 0;
+
+    *buf = ret;
+    bpf_ringbuf_submit(buf, 0);
+
     return 0;
 }
 

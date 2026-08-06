@@ -7,7 +7,6 @@ This tool answers the question: how many times has socket syscalls been called b
 
 - [ ] Use TUI to print output
 - [ ] relate to parent file descriptors (e.g. from accept and epoll)
-- [ ] Support forked processes using sched_process_fork
 
 ## Usage
 

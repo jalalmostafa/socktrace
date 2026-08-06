@@ -42,7 +42,7 @@ func (perf *SocktraceEventLog) WriteEvent(event *SocketEvent) error {
 
 	row := fmt.Sprintf("%d,%d,%d,%d,%d,%s,%d\n",
 		event.Cookie, event.ParentCookie, event.TimestampNs,
-		event.Pid, event.Tgid, socktrace_syscalls[int(event.Operation)],
+		event.Pid, event.Tgid, socktrace_syscalls[event.Operation],
 		event.FileDescriptor)
 
 	_, err := perf.file.WriteString(row)
